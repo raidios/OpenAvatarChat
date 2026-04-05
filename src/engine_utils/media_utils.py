@@ -7,7 +7,7 @@ import time
 from typing import Union
 import wave
 
-import PIL
+from PIL import Image as PILImage
 from loguru import logger
 import numpy as np
 
@@ -60,7 +60,7 @@ class ImageUtils:
         #     video_frame = (video_frame * 255).astype(np.uint8)
 
         # 将 NumPy 数组转换为 PIL 图像对象
-        image = PIL.Image.fromarray(np.squeeze(video_frame)[..., ::-1])
+        image = PILImage.fromarray(np.squeeze(video_frame)[..., ::-1])
 
         # 创建一个内存缓冲区
         buffered = BytesIO()

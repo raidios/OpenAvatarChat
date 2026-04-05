@@ -1,9 +1,8 @@
 import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Union, Tuple, Optional
+from typing import Any, Union, Tuple, Optional
 
-import gradio
 import numpy as np
 from fastapi import FastAPI
 from loguru import logger
@@ -92,7 +91,7 @@ class ClientHandlerBase(HandlerBase, ABC):
         self.handler_delegate.engine_ref = self.engine
 
     @abstractmethod
-    def on_setup_app(self, app: FastAPI, ui: gradio.blocks.Block, parent_block: Optional[gradio.blocks.Block]=None):
+    def on_setup_app(self, app: FastAPI, ui: Optional[Any] = None, parent_block: Optional[Any] = None):
         pass
 
     @abstractmethod

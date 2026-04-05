@@ -1,0 +1,8 @@
+[project]
+name = "handler-wakeword-sherpa-kws"
+version = "0.1.0"
+description = "Wake word detection handler using sherpa-onnx KeywordSpotter"
+requires-python = ">=3.10"
+dependencies = [
+    "sherpa-onnx>=1.10.0",
+]

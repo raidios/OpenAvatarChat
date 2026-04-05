@@ -1,0 +1,46 @@
+default:
+  logger:
+    log_level: "INFO"
+  service:
+    host: "0.0.0.0"
+    port: 8282
+  chat_engine:
+    model_root: "models"
+    concurrent_limit: 1
+    handler_search_path:
+      - "src/handlers"
+    handler_configs:
+      WsClient:
+        module: client/ws_client/client_handler_ws
+      WakeWord:
+        module: wakeword/sherpa_kws/wakeword_handler_sherpa
+        model_dir: "models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20"
+        keywords_file: "config/keywords.txt"
+        keywords_score: 1.5
+        keywords_threshold: 0.25
+        num_threads: 2
+      SileroVad:
+        module: vad/silerovad/vad_handler_silero
+        speaking_threshold: 0.5
+        start_delay: 2048
+        end_delay: 5000
+        buffer_look_back: 5000
+        speech_padding: 512
+      QwenASR:
+        module: asr/qwen_asr/asr_handler_qwen
+        model_name: "fun-asr-realtime"
+        language_hints:
+          - "zh"
+          - "en"
+      QwenTTS:
+        module: tts/qwen_tts/tts_handler_qwen
+        model_name: "qwen3-tts-flash"
+        voice: "Cherry"
+        sample_rate: 24000
+      LLMOpenAICompatible:
+        module: llm/openai_compatible/llm_handler_openai_compatible
+        model_name: "qwen3.5-flash"
+        enable_video_input: true
+        history_length: 20
+        system_prompt: "你扮演一个正常的女孩，说话需要用口语化的表达，简短，准确。你能看到画面，但画面只是回答的参考，不需要每一次都参考画面的内容。仅仅在当前对话涉及到画面内容时，你才需要去观察当前输入画面的内容。"
+        api_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"

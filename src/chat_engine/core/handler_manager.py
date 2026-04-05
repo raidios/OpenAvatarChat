@@ -9,7 +9,7 @@ from inspect import isclass, isabstract
 from types import ModuleType
 from typing import Optional, Dict, Tuple
 
-import gradio
+from typing import Any
 from fastapi import FastAPI
 from loguru import logger
 
@@ -131,8 +131,8 @@ class HandlerManager:
 
     def load_handlers(self, engine_config: ChatEngineConfigModel,
                       app: Optional[FastAPI] = None,
-                      ui: Optional[gradio.blocks.Block] = None,
-                      parent_block: Optional[gradio.blocks.Block] = None):
+                      ui: Optional[Any] = None,
+                      parent_block: Optional[Any] = None):
         enabled_handlers = self.get_enabled_handler_registries()
         client_handlers = []
         for registry in enabled_handlers:

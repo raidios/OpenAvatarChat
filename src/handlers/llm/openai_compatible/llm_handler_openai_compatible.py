@@ -134,12 +134,13 @@ class HandlerLLM(HandlerBase, ABC):
         logger.debug(f'llm input {context.model_name} {current_content} ')
         try:
             completion = context.client.chat.completions.create(
-                model=context.model_name,  # 此处以qwen-plus为例，可按需更换模型名称。模型列表：https://help.aliyun.com/zh/model-studio/getting-started/models
+                model=context.model_name,
                 messages=[
                     context.system_prompt,
                 ] + current_content,
                 stream=True,
-                stream_options={"include_usage": True}
+                stream_options={"include_usage": True},
+                extra_body={"enable_thinking": False},
             )
             context.current_image = None
             context.input_texts = ''

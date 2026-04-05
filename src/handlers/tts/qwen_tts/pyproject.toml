@@ -1,0 +1,8 @@
+[project]
+name = "handler-tts-qwen"
+version = "0.1.0"
+description = "Qwen TTS handler using dashscope MultiModalConversation API"
+requires-python = ">=3.10"
+dependencies = [
+    "dashscope>=1.25.6",
+]

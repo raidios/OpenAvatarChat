@@ -12,7 +12,7 @@ from chat_engine.data_models.session_info_data import SessionInfoData, IOQueueTy
 @dataclass
 class SharedStates:
     active: bool = False
-    enable_vad: bool = True
+    enable_vad: bool = False
 
 
 class SessionContext(object):
