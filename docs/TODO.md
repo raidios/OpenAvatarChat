@@ -8,10 +8,10 @@
 
 四大能力都跑通了，但带三个待诊断问题。**下个 session 方向 = 先测全现状、建基线**，诊断方法见 [EVAL_PLAN.md](EVAL_PLAN.md)。
 
-- **0.1 VAD 唤醒困难（接麦阵后）**🟡假设待证：换麦阵前对话良好，接 M260C 远场链路后 VAD 有时唤不起来。
-  - 观察（车上 2026-05-31，**但未确认当时有无语音**）：`[mic]` peak 在 -51~-43 dBFS 间小幅波动，绝对电平很低。**⚠️ 这组数据是在不确定有无人说话时抓的历史日志，不能据此断定"DSP 电平过低"**——若当时本就安静，这只是噪声起伏。
-  - 可靠验证（read-only，需有人按指令说话）：①受控测——有人在正常距离/音量说固定话术，同时看实时 `[mic] peak_dbFS` 的语音 vs 静音对比；②同时surface Silero VAD 概率 + 看 ASR 是否触发；③A/B 麦阵 DSP 输出 vs 直接单麦。只有在**确认有语音**的样本上，才能判断到底是 (a) DSP 输出电平过低（→末级加 makeup gain/AGC）还是 (b) 麦阵链路/参数问题。
-  - 相关：`audio_frontend/dsp/`（MVDR/末级增益）、`farfield_audio_source.py`、`vad/silerovad` 参数。
+- **0.1 VAD "有时"唤醒困难（接麦阵后）**🟡 现象仍在，但"DSP 电平过低"已**证伪**。
+  - 受控测量（有声起止框定窗口，2026-05-31 00:18，**确认有语音**）：真实语音 peak **-20~-28 dBFS**（rms 222~377），远高于环境噪声 ~-45；Silero `max_prob=0.95~0.96`（阈值 0.25 绰绰有余）；ASR 出文本、LLM 回复、TTS 出声——**整条对话闭环本次跑通**。→ 之前那组 -45dBFS 是**环境噪声不是语音**，"DSP 输出电平过低"不成立（教训：未确认有语音就拿历史 `[mic]` 数值下结论是错的）。
+  - 新线索（更可能的间歇性根因）：**playback↔mic 门控时序**。日志见 `[mic] mute=True is_playing=True mute_until_in=-1393.29s`（疑 stale/异常时间戳）+ 服务端 `Wake reply did not receive playback_complete in time; enabling VAD (server failsafe)`。怀疑唤醒应答/TTS 播放与 VAD 重新使能的握手在某些情况下错位 → 偶发吞掉语音。**需抓一次失败实例**对比成功/失败时的 mute/playback 状态。
+  - 相关：`client/ws_audio_client.py`（mute/playback）、`wakeword/sherpa_kws/...`（wake reply + playback_complete 握手）、`vad/silerovad`、`client_handler_ws.py`。
 - **0.2 ArUco 跟踪卡顿/迟滞**🟢根因已定位（车上实测）：**marker 检测严重间歇**——静止 tag 也是"检测~1s → Tag lost → IDLE → ~7s 后重获"反复横跳，控制器每次丢失即 `TRACKING→IDLE` 发零速停车 → 一顿一顿。**机制**：客户端单进程，远场 DSP 线程 **99.9% CPU（GIL-bound）**，4 核虽有空闲但 **Python GIL** 抢占，相机/视觉线程被饿 → 丢帧 → 检测断续。相机=`/dev/video0` USB2.0 640×480（非 Orbbec），fps 未知可能不稳。原"300ms cmd_vel 超时"假设是次要放大器，主因是检测丢帧。**修复方向**：① 跟踪状态加 hold/debounce（短暂丢失保持上一速度，类似已有的 `--tag-expression-holdoff-ms`）；② 降 DSP 的 GIL 占用（DSP 移子进程 / C 扩展 / 降处理帧率），给视觉线程让出 GIL；③ 核实相机 fps，必要时换相机或调检测参数。相关：`apriltag_tracker.py`、`tracking_controller.py`、`audio_frontend/dsp/pipeline.py`、`camera.py`。
 - **0.3 情绪 tag 与回答相关性低**🟡：表情/动作触发正常，但情绪标签和回答内容语义相关性不高。疑 prompt 与模型契合度。看 `config/system_prompt.txt` 对情绪 tag 的约束、`action_tags` 白名单一致性，A/B 调 prompt。
 - **0.4 🔴 安全：DashScope api_key 在 journald 明文留存**：服务端 `chat_engine/core/handler_manager.py:register_handler` 在 INFO 日志里**打印了完整 handler config，包含 `api_key='sk-…'`**（QwenASR/LLM 从 `.env` 注入的 key 被原样打到 journal）。key 本身**不在 git**（`.env` 已忽略），但 journald 明文可读、且会随日志外泄。**处理**：① 轮换该 DashScope key（已在日志/调试过程中暴露）；② 在 `register_handler` 日志里对 `api_key`/secret 字段脱敏（如 `sk-…****`）。
