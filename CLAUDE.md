@@ -6,13 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A fork of upstream **OpenAvatarChat** (a general conversational digital-human system) adapted to run a **physical smart car / robot**: a Raspberry Pi 5 "upper computer" running the voice+vision dialog stack, driving an STM32F103 "lower computer" (chassis/IMU/motors) over a serial protocol. The robot-specific code (`client/`, `audio_frontend/`, `ros2_ws/`, `tools/`, `firmware/`, `expression_player/`, robot configs) lives only on this fork; the dialog **server** is largely upstream.
 
+> **Read first each session:** `docs/PROJECT_STATE.md` (what actually runs on the car — startup → which handlers/config are live vs. which code is built-but-dormant) and `docs/TODO.md` (unfinished / blocked / Plan-B work to review when picking next direction). Keep both updated as the deployment changes.
+
 ## Branch model — do not pollute upstream
 
-`origin` is the **upstream** repo (`HumanAIGC-Engineering/OpenAvatarChat`), not ours.
+Two remotes: **`upstream`** = `HumanAIGC-Engineering/OpenAvatarChat` (the real digital-human project, read-only reference); **`origin`** = `raidios/OpenAvatarChat` (the fork — push here).
 
-- **`main`** tracks `origin/main` = pristine upstream digital-human project. Keep it clean; never commit car work here.
-- **`smart-car`** = all robot/car work (the normal working branch). It has **no upstream tracking** on purpose. Fork point from upstream is `93c7c4b` (#209).
-- When pushing car work, push to a **separate branch** (`git push <fork-or-origin> smart-car`), never to `main`. Assume no write access to upstream `main` anyway.
+- **`main`** tracks `upstream/main` = pristine upstream digital-human project. Keep it clean; never commit car work here. `git pull` brings clean upstream updates.
+- **`smart-car`** = all robot/car work (the normal working branch); tracks `origin/smart-car` on the fork. Fork point from upstream is `93c7c4b` (#209).
+- Push car work only to the fork (`git push origin smart-car`), never to `upstream`/`main`.
 
 ## Runtime topology (two processes)
 
