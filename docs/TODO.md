@@ -8,9 +8,10 @@
 
 四大能力都跑通了，但带三个待诊断问题。**下个 session 方向 = 先测全现状、建基线**，诊断方法见 [EVAL_PLAN.md](EVAL_PLAN.md)。
 
-- **0.1 VAD 唤醒困难（接麦阵后）**🟡：换麦阵前对话良好，接 M260C 远场链路后 VAD 有时唤不起来。两个假设：(a) 麦阵 DSP（AEC+MVDR）输出电平偏低 → Silero `speaking_threshold=0.25` 达不到；(b) 麦阵实现/链路问题。**未排查**。先量 DSP 输出 RMS/dBFS、看 VAD 概率分布、A/B 单麦 vs 麦阵。相关：`vad/silerovad`（config 参数）、`farfield_audio_source.py`、`audio_frontend/dsp/`(末级增益)。
-- **0.2 ArUco 跟踪卡顿/迟滞**🟡：方向角度对、能驱动底盘，但动作不连贯、明显卡断。疑 marker 检测不连续/频繁丢失。**强假设**：检测丢失 → 客户端停发 `0x50 cmd_vel` → 固件 300ms 超时进 IDLE 刹车 → 卡顿。需 profile：检测命中率/连续丢失长度/每帧检测耗时/相机帧率/控制指令间隔。相关：`apriltag_tracker.py`、`tracking_controller.py`、相机选择（auto）。
+- **0.1 VAD 唤醒困难（接麦阵后）**🟢根因已定位（车上实测 2026-05-31）：**远场 DSP 输出电平过低**。客户端 `[mic]` 日志：说话段 peak 仅 **-43~-47 dBFS**、静音 -51~-52 dBFS，绝对电平极小（rms 21~31 / 32768），区分度只有 ~5-8 dB；Silero `speaking_threshold=0.25` 难稳定触发。无麦阵时走 PyAudio 单麦电平正常 → 印证是 DSP 链路电平问题，非麦阵硬件。**修复方向**：DSP 末级加 makeup gain / AGC（或对 MVDR 输出归一化）把语音抬到合理电平；降阈值只是权宜。相关：`audio_frontend/dsp/`（MVDR/末级增益）、`farfield_audio_source.py`、`vad/silerovad` 参数。
+- **0.2 ArUco 跟踪卡顿/迟滞**🟢根因已定位（车上实测）：**marker 检测严重间歇**——静止 tag 也是"检测~1s → Tag lost → IDLE → ~7s 后重获"反复横跳，控制器每次丢失即 `TRACKING→IDLE` 发零速停车 → 一顿一顿。**机制**：客户端单进程，远场 DSP 线程 **99.9% CPU（GIL-bound）**，4 核虽有空闲但 **Python GIL** 抢占，相机/视觉线程被饿 → 丢帧 → 检测断续。相机=`/dev/video0` USB2.0 640×480（非 Orbbec），fps 未知可能不稳。原"300ms cmd_vel 超时"假设是次要放大器，主因是检测丢帧。**修复方向**：① 跟踪状态加 hold/debounce（短暂丢失保持上一速度，类似已有的 `--tag-expression-holdoff-ms`）；② 降 DSP 的 GIL 占用（DSP 移子进程 / C 扩展 / 降处理帧率），给视觉线程让出 GIL；③ 核实相机 fps，必要时换相机或调检测参数。相关：`apriltag_tracker.py`、`tracking_controller.py`、`audio_frontend/dsp/pipeline.py`、`camera.py`。
 - **0.3 情绪 tag 与回答相关性低**🟡：表情/动作触发正常，但情绪标签和回答内容语义相关性不高。疑 prompt 与模型契合度。看 `config/system_prompt.txt` 对情绪 tag 的约束、`action_tags` 白名单一致性，A/B 调 prompt。
+- **0.4 🔴 安全：DashScope api_key 在 journald 明文留存**：服务端 `chat_engine/core/handler_manager.py:register_handler` 在 INFO 日志里**打印了完整 handler config，包含 `api_key='sk-…'`**（QwenASR/LLM 从 `.env` 注入的 key 被原样打到 journal）。key 本身**不在 git**（`.env` 已忽略），但 journald 明文可读、且会随日志外泄。**处理**：① 轮换该 DashScope key（已在日志/调试过程中暴露）；② 在 `register_handler` 日志里对 `api_key`/secret 字段脱敏（如 `sk-…****`）。
 
 ## 1. 🟡 DNS 降噪（DTLN → Hailo-10H）—— HEF 已成、因 buzz 默认关
 
