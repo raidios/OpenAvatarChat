@@ -53,11 +53,19 @@ class HumanAudioVADContext(HandlerContext):
 
         self.speech_id: int = 0
 
+        self._debug_chunk_count: int = 0
+        self._debug_max_prob: float = 0.0
+        self._debug_max_abs: float = 0.0
+        self._debug_last_log_count: int = 0
+
     def reset(self):
         self.audio_history.clear()
         self.speech_length = 0
         self.silence_length = 0
         self.slice_context.flush()
+        self.speaking_status = SpeakingStatus.END
+        if self.model_state is not None:
+            self.model_state = np.zeros_like(self.model_state)
 
     def _update_status_on_pre_start(self, clip: np.ndarray, _timestamp: Optional[int] = None):
         if self.speech_length >= self.config.start_delay:
@@ -239,6 +247,23 @@ class HandlerAudioVAD(HandlerBase, ABC):
         for clip in slice_data(context.slice_context, audio):
             head_sample_id = context.slice_context.get_last_slice_start_index()
             speech_prob = self._inference(context, clip)
+            context._debug_chunk_count += 1
+            if float(speech_prob) > context._debug_max_prob:
+                context._debug_max_prob = float(speech_prob)
+            clip_max = float(np.max(np.abs(clip))) if clip.size else 0.0
+            if clip_max > context._debug_max_abs:
+                context._debug_max_abs = clip_max
+            if context._debug_chunk_count - context._debug_last_log_count >= 32:
+                logger.info(
+                    f"VAD debug status={context.speaking_status.name} "
+                    f"clips={context._debug_chunk_count} "
+                    f"max_prob={context._debug_max_prob:.3f} "
+                    f"max_abs={context._debug_max_abs:.3f} "
+                    f"speech_len={context.speech_length} silence_len={context.silence_length}"
+                )
+                context._debug_last_log_count = context._debug_chunk_count
+                context._debug_max_prob = 0.0
+                context._debug_max_abs = 0.0
             audio_clip, extra_args = context.update_status(speech_prob, clip, timestamp=head_sample_id)
             # FIXME this is a hack to disable VAD after human speech end,
             #  but it should be handled by client or downstream handlers
@@ -261,6 +286,12 @@ class HandlerAudioVAD(HandlerBase, ABC):
                 if timestamp >= 0:
                     output_chat_data.timestamp = timestamp, sample_rate
                 yield output_chat_data
+            if human_speech_end:
+                # Stop processing remaining clips in this chunk; otherwise their
+                # _inference calls would re-poison the freshly-reset model_state
+                # and update_status could push the state machine into PRE_START
+                # while VAD is disabled, leaving a stale state for the next turn.
+                break
 
     def destroy_context(self, context: HandlerContext):
         pass

@@ -1,0 +1,101 @@
+---
+description: X-Protocol 通信协议规范及 UART 接口说明
+globs: "Driver/ax_uart*.c,Driver/ax_uart*.h"
+alwaysApply: false
+---
+
+# X-Protocol 通信协议
+
+## 帧格式
+```
+AA 55 | LEN | ID | DATA... | CHECKSUM
+帧头    帧长   帧码  数据      校验和
+```
+- **帧头**: 0xAA 0x55 (双字节，抗干扰)
+- **帧长(LEN)**: 整个帧总字节数 = 数据长度 + 5
+- **帧码(ID)**: 功能标识，唯一区分帧类型
+- **数据**: 高位在前(MSB-first)，长度可变，支持8/16/32位数据
+- **校验和**: 从帧头到数据所有字节的累加和，取低8位
+
+## UART 接口分配
+| UART | 引脚 | 波特率 | 当前用途 | 可用状态 |
+|------|------|--------|----------|----------|
+| USART1 | PA9/PA10 | 230400 | 调试/USB + IMU PID调参 | 已占用 |
+| USART2 | PA2/PA3 | 115200 | 蓝牙APP控制 | 已占用(可改为Pi通信) |
+| UART4 | PC10/PC11 | 115200 | **OpenAvatarChat：X-Protocol 与 `serial_comm.py` 对齐**（`ax_uart4.c` + `main.c` 已初始化） | Pi 对接 |
+| UART5 | PC12/PD2 | - | 驱动已实现，未初始化 | **可用** |
+
+## 已定义的帧码(ID)
+
+### 调试串口 (USART1)
+- `0x60` ID_COM_IMU_VEL: 速度设定
+- `0x61` ID_COM_IMU_PID: IMU PID参数设定 (kp + kd, 各16位)
+
+### 蓝牙APP (USART2)
+- `0x30` ID_BLERX_CM: 蓝牙连接指令 (切换APP模式)
+- `0x31` ID_BLERX_YG: 摇杆模式控制
+- `0x32` ID_BLERX_SB: 手柄模式控制
+
+### Pi / 树莓派 (UART4，`Driver/ax_uart4.c`，与 Keil 工程一同编译)
+- `0x10` ID_CPR2ROS_DATA: 下位机→上位机综合数据 (IMU 6轴 + 速度3轴 + 电压 = 20字节)，50Hz
+- `0x11` ID_CPR2ROS_PS2:  下位机→上位机 PS2 手柄状态 (mode/btn1/btn2/RJoy_LR/RJoy_UD/LJoy_LR/LJoy_UD = 7字节)，50Hz
+- `0x12` ID_CPR2ROS_CTL:  下位机→上位机仲裁/控制状态 (8字节: source + flags + tg_vx/tg_vy/tg_vw)，50Hz
+- `0x50` ID_ROS2CRP_VEL:  上位机→下位机速度指令 (vx, vy, vw 各 int16 big-endian，单位 m/s×1000、rad/s×1000)
+- `0x51` ID_ROS2CRP_IMU:  （预留）IMU 校准
+- `0x5f` ID_ROS2CRP_AKM:  （预留）舵机零偏
+
+#### `0x12` payload (8 字节, big-endian)
+| 偏移 | 字段     | 类型  | 说明 |
+|------|----------|-------|------|
+| 0    | source   | u8    | 当前控制源 (`AX_CTRL_SRC_*`) |
+| 1    | flags    | u8    | 仲裁标志位 (`AX_CTRL_FLAG_*`) |
+| 2-3  | tg_vx    | i16   | 当前目标 X 速度 (mm/s) |
+| 4-5  | tg_vy    | i16   | 当前目标 Y 速度 (mm/s, 差速车恒 0) |
+| 6-7  | tg_vw    | i16   | 当前目标角速度 (mrad/s) |
+
+控制源：
+
+| 值 | 名称 | 说明 |
+|----|------|------|
+| 0 | `AX_CTRL_SRC_IDLE` | 无人接管，目标速度被强制清零（刹车） |
+| 1 | `AX_CTRL_SRC_PS2`  | PS2 手柄正在覆盖一切，最高优先级 |
+| 2 | `AX_CTRL_SRC_PI`   | 由上位机 0x50 速度帧驱动 |
+| 3 | `AX_CTRL_SRC_APP`  | 蓝牙 APP 接管 (USART2) |
+| 4 | `AX_CTRL_SRC_FN1`  | 巡线/自主模式 |
+
+`flags` 位定义：
+
+| 位    | 名称                       | 含义 |
+|-------|----------------------------|------|
+| 0x01  | `AX_CTRL_FLAG_PS2_ACTIVE`  | 本 tick `PS2_IsActive()` 返回 1 |
+| 0x02  | `AX_CTRL_FLAG_PS2_OVERRIDE`| 处于 800 ms 接管窗口期 |
+| 0x04  | `AX_CTRL_FLAG_PS2_WARMUP`  | 启动 warm-up 已结束（PS2 可夺权） |
+| 0x08  | `AX_CTRL_FLAG_PI_LIVE`     | Pi cmd_vel 在 300 ms 新鲜度内 |
+| 0x10  | `AX_CTRL_FLAG_PS2_GLITCH`  | 四根摇杆同为 `0x00`/`0xFF`，判为接收器抽风 |
+| 0x20  | `AX_CTRL_FLAG_PS2_HOLD0`   | 在接管期但摇杆已松开，目标速度被强制清零 |
+
+## 输入仲裁优先级
+`Robot/ax_robot.c::Robot_Task` 在每个 50 Hz 控制周期按以下顺序选择速度源：
+1. **PS2 手柄（最高优先级，可瞬时夺权）**：任何按键非默认 (`btn1/btn2 != 0x00`) 或摇杆偏离 `0x80` 中位超过 `PS2_DEADZONE`（默认 30）即视为活跃，立刻接管。
+2. **PS2 释放**：摇杆回中且无按键持续 `PS2_RELEASE_MS`（默认 800 ms）后，控制权才让回 Pi/APP。
+3. **Pi cmd_vel**：在最近一帧 `0x50` 后 `PI_CMD_TIMEOUT_MS`（默认 300 ms）内有效。
+4. **APP**：仅当蓝牙 APP 已握手（`ax_control_mode == CTL_APP`）**且** `ax_robot_move_enable == 1`（由 KEY 长按 3-10 s 启用，或 BLE 0x30 握手帧自动启用）时执行。
+5. **IDLE**：以上都不命中时强制 `R_Vel.TG_I* = 0` 并清 `ax_robot_move_enable = 0`，让 `AX_ROBOT_Kinematics()` 的软急停作第二道闸。
+
+> ⚠️ **FN1（陀螺仪闭环直行）已从默认仲裁路径中移除**。
+> `Robot/ax_function.c::AX_FUN_Ls1()` 会无条件写 `R_Vel.TG_IX = 200`（0.2 m/s），原作者用作"开机即自动巡线"的默认。这与本项目"Pi 显式控制 + PS2 兜底"的语义冲突——Pi 只要超过 300 ms 没续发 cmd_vel，仲裁就会跌进 FN1 把车自动开走。修复后默认 `ax_control_mode = 0`，并把仲裁里 `else if (ax_control_mode == CTL_FN1) AX_FUN_Ls1();` 整段删除。如果以后真要用巡线，请显式加一道独立的"按某组合键 + 蜂鸣器提示"的启用守护。
+
+> 🧭 **关于 IMU yaw 漂移**：`MPU6050` 的 `gyro_z` 即便经过 10 次启动校准平均，仍存在 LSB 级零偏，`client/serial_comm.py` 的 `yaw_deg` 累加积分会随时间漂移——这是物理现象，**仅作里程计参考**，不会驱动小车移动。固件**没有任何路径**让 yaw 直接进入 `R_Vel.TG_IX/TG_IY`，唯一一处 yaw 反馈写 `TG_IW` 的是 `AX_FUN_Ls1()`，已经退出默认仲裁。
+
+每个周期通过 `0x12` 帧把当前生效的源告诉上位机，上位机应据此**在 PS2 接管期间暂停发送 cmd_vel**（或即便继续发也会被忽略，但最佳实践是停发避免与人争抢）。
+
+### PS2 防误触发与漂移保护
+仲裁层使用本地 `Robot_ApplyPs2()` 计算速度（不再调用 `AX_CTL_Ps2()`），并叠加三层保护：
+- **`PS2_LooksLikeGlitch()`**：四根摇杆同时为 `0x00` 或 `0xFF` 视为接收器抽风，不算活跃也不输出速度（解决山寨接收器在握手前用 `mode==0x73 + 摇杆值=0xFF` 把油门钉死的问题）。
+- **`PS2_WARMUP_MS`（默认 2000 ms）**：上电后前 2 秒 PS2 不允许夺权，让接收器完成与手柄的同步。
+- **`PS2_DEADZONE`（默认 30）**：摇杆距 `0x80` 中位的死区严格执行到速度计算上——居中漂移产生的小偏移直接归零，确保人松手后小车一定停。
+
+## 注意事项
+- **Pi 走 UART4**，与蓝牙 **USART2** (`ax_uart2.c`) 无引脚冲突。
+- 历史文件 `ax_uart_pi.c` 曾占用 USART2，**不要**与 `ax_uart2.c` 同时链接；当前以 UART4 实现为准。
+- 上位机收到 `0x12 == AX_CTRL_SRC_PS2` 后建议暂停 `0x50` 发送，等回到 `AX_CTRL_SRC_PI/IDLE` 再恢复。

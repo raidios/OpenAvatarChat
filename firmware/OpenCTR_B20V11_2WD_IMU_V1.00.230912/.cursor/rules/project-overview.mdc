@@ -1,0 +1,53 @@
+---
+description: OpenCTR B20 双轮差速小车固件项目概览，包含硬件平台、软件架构、构建工具链信息
+alwaysApply: true
+---
+
+# 项目概览 - OpenCTR B20 TWD (Two-Wheel Differential) 机器人控制器
+
+## 硬件平台
+- **MCU**: STM32F103RCT6 (ARM Cortex-M3, 72MHz, 48KB RAM, 256KB Flash)
+- **控制板**: OpenCTR B20 V1.1 (XTARK/TARKBOT 系列)
+- **晶振**: 8MHz HSE, 系统时钟 72MHz
+- **机器人型号**: ROBOT_R10 (定义在 `Robot/ax_robot.h`)
+  - 轮径: 75mm, 轮距: 172mm
+  - 编码器分辨率: 1560 (13线, 减速比30, 13×30×4)
+
+## 软件架构
+- **RTOS**: FreeRTOS V9.0.0, 抢占式调度, 1ms Tick
+  - 堆管理: heap_4.c, 总堆大小 20KB
+  - ARM_CM3 移植层
+- **外设库**: STM32F1 Standard Peripheral Library (非 HAL)
+- **预处理宏**: `USE_STDPERIPH_DRIVER`, `STM32F10X_HD`
+
+## 构建工具链
+- **IDE**: Keil MDK-ARM v5.36
+- **编译器**: ARM Compiler 5 (V5.06 update 7), 非 AC6/LLVM
+- **项目文件**: `Project/xproject.uvprojx`
+- **调试器**: J-Link SWD
+- **输出**: `Project/Objects/xproject.hex`
+
+## 目录结构
+```
+Robot/        应用层：main.c, FreeRTOS任务, 运动学, 控制逻辑, FreeRTOSConfig.h
+Driver/       驱动层：电机/编码器/MPU6050/UART/OLED/PS2 等外设驱动 (ax_* 命名)
+FreeRTOS/     FreeRTOS 内核源码 (仅构建 ARM_CM3 port + heap_4)
+Libraries/    CMSIS + STM32F1 StdPeriph 库
+Project/      Keil 工程文件 + 编译产物
+Doc/          产品说明文档
+```
+
+## FreeRTOS 任务
+| 任务 | 优先级 | 栈(words) | 周期 | 功能 |
+|------|--------|-----------|------|------|
+| Start_Task | 1 | 128 | 一次性 | IMU校准, 创建子任务后自删除 |
+| Robot_Task | 3 | 256 | 20ms (50Hz) | 运动控制主循环 |
+| Key_Task | 4 | 128 | 50ms | 按键扫描 |
+| Disp_Task | 6 | 128 | ~200ms | OLED 状态显示 |
+| Trivia_Task | 10 | 128 | - | 杂项管理(蜂鸣器/LED/电池) |
+| Ps2_Task | 11 | 128 | - | PS2手柄数据读取 |
+
+## 资源约束提醒
+- RAM 仅 48KB，FreeRTOS 堆已占 20KB，新增任务/缓冲区需谨慎
+- Flash 256KB，当前固件占用需关注
+- 浮点运算为软件模拟 (Cortex-M3 无 FPU)，尽量用整数/定点运算

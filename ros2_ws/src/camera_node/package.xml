@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>camera_node</name>
+  <version>0.1.0</version>
+  <description>
+    Orbbec Gemini Pro RGB-D bridge (SDK path with hardware D2C) for OpenAvatarChat.
+    Publishes /camera/color/image_raw, /camera/depth/image_aligned, /camera/color/camera_info.
+  </description>
+  <maintainer email="dev@local">cyk</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

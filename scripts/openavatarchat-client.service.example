@@ -1,0 +1,48 @@
+# Full unit: copy to ~/.config/systemd/user/openavatarchat-client.service
+# Replace USER and paths. Then: systemctl --user daemon-reload && systemctl --user restart openavatarchat-client
+#
+# 默认素材在仓库 expression_player/images；未安装完整 SVG 时带 --expression 会自动回退为无窗口模式。
+# 覆盖目录: Environment=EXPRESSION_SVG_DIR=/path/to/svgs
+
+[Unit]
+Description=OpenAvatarChat Robot Client
+After=gnome-session.target openavatarchat.service
+Wants=openavatarchat.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/home/USER/codes/OpenAvatarChat
+Environment=PYTHONUNBUFFERED=1
+Environment=DISPLAY=:0
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=XDG_RUNTIME_DIR=/run/user/UID
+# Environment=EXPRESSION_SVG_DIR=/home/USER/custom_svgs
+ExecStartPre=/bin/sleep 5
+# 默认启用：
+#   --farfield                     M260C 6+2 ch -> SRP-PHAT/MVDR/AEC -> 16k mono
+#   --wake-kws-*                   客户端 Sherpa-ONNX KWS（与服务端 KWS 并行）
+#   --wake-orient-*                KWS 命中后用 IMU 闭环把车体转向声源方位
+#                                  （和 --serial-port 一起生效；无串口时仅打印事件）
+# 关掉远场链路：去掉 --farfield 即可（其它参数会自动失效）。
+# 关掉旋转（保留 KWS+DSP）：再加 --no-wake-orient。
+ExecStart=/home/USER/codes/OpenAvatarChat/.venv/bin/python client/main.py \
+    --server ws://127.0.0.1:8282/ws/chat \
+    --serial-port /dev/ttyAMA0 \
+    --tag-size 0.045 \
+    --calib-file config/camera_calib.json \
+    --farfield \
+    --farfield-mic-yaw-offset-deg 30 \
+    --wake-kws-keywords config/keywords.txt \
+    --wake-kws-threshold 0.25 \
+    --wake-orient-min-deg 8 \
+    --wake-orient-deadzone-deg 5
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=gnome-session.target

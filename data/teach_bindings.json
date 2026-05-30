@@ -1,0 +1,18 @@
+{
+  "happy": {
+    "clip_id": "5bd3b14d",
+    "expression_id": "happy"
+  },
+  "shy": {
+    "clip_id": "3407de9b",
+    "expression_id": "listen"
+  },
+  "apologize": {
+    "clip_id": "3407de9b",
+    "expression_id": "frown"
+  },
+  "scared": {
+    "clip_id": "3407de9b",
+    "expression_id": "dead"
+  }
+}

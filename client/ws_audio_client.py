@@ -15,6 +15,7 @@ import json
 import signal
 import struct
 import sys
+import time
 import threading
 from collections import deque
 
@@ -38,6 +39,10 @@ VIDEO_FPS = 0.5  # send a frame every 2 seconds
 JPEG_QUALITY = 60
 
 
+MUTE_TAIL_SEC = 0.3
+FADE_IN_SAMPLES = 480  # 20ms at 24kHz
+
+
 class AudioPlayer:
     def __init__(self):
         self.pa = pyaudio.PyAudio()
@@ -50,22 +55,60 @@ class AudioPlayer:
         )
         self.buffer = deque()
         self.lock = threading.Lock()
+        self.audio_end_received = False
+        self.playback_done_event = asyncio.Event()
+        self.is_playing = False
+        self.mute_until: float = 0.0
+        self._need_fade_in = False
+
+    @property
+    def mic_should_mute(self) -> bool:
+        return self.is_playing or time.monotonic() < self.mute_until
 
     def enqueue(self, pcm_bytes: bytes):
         with self.lock:
+            if not self.is_playing:
+                self._need_fade_in = True
             self.buffer.append(pcm_bytes)
+            self.is_playing = True
 
     def clear(self):
         with self.lock:
             self.buffer.clear()
+            self.audio_end_received = False
+            self.is_playing = False
+            self._need_fade_in = False
+
+    def mark_audio_end(self):
+        with self.lock:
+            self.audio_end_received = True
 
     def play_chunk(self) -> bool:
         with self.lock:
             if not self.buffer:
+                if self.audio_end_received:
+                    self.audio_end_received = False
+                    self.is_playing = False
+                    self.mute_until = time.monotonic() + MUTE_TAIL_SEC
+                    self.playback_done_event.set()
                 return False
             data = self.buffer.popleft()
+            apply_fade = self._need_fade_in
+            self._need_fade_in = False
+
+        if apply_fade:
+            data = self._apply_fade_in(data)
+
         self.stream.write(data)
         return True
+
+    @staticmethod
+    def _apply_fade_in(pcm_bytes: bytes) -> bytes:
+        samples = np.frombuffer(pcm_bytes, dtype=np.int16).copy()
+        fade_len = min(FADE_IN_SAMPLES, len(samples))
+        ramp = np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
+        samples[:fade_len] = (samples[:fade_len].astype(np.float32) * ramp).astype(np.int16)
+        return samples.tobytes()
 
     def close(self):
         self.stream.stop_stream()
@@ -73,8 +116,11 @@ class AudioPlayer:
         self.pa.terminate()
 
 
-async def mic_sender(ws, pa_instance, stop_event: asyncio.Event):
-    """Continuously read from mic and send audio frames."""
+SILENCE_FRAME = bytes(MIC_CHUNK * 2)  # MIC_CHUNK samples * 2 bytes (int16)
+
+
+async def mic_sender(ws, pa_instance, player: AudioPlayer, stop_event: asyncio.Event):
+    """Continuously read from mic and send audio frames. Muted during playback."""
     stream = pa_instance.open(
         format=pyaudio.paInt16,
         channels=MIC_CHANNELS,
@@ -86,6 +132,8 @@ async def mic_sender(ws, pa_instance, stop_event: asyncio.Event):
     try:
         while not stop_event.is_set():
             data = await loop.run_in_executor(None, stream.read, MIC_CHUNK, False)
+            if player.mic_should_mute:
+                data = SILENCE_FRAME
             msg = bytes([MSG_TYPE_AUDIO]) + data
             await ws.send(msg)
     except Exception as e:
@@ -144,7 +192,7 @@ async def ws_receiver(ws, player: AudioPlayer, stop_event: asyncio.Event):
                     elif msg_type == "llm_text":
                         print(f"[LLM] {data.get('text', '')}", end="", flush=True)
                     elif msg_type == "audio_end":
-                        print("\n[TTS] Audio playback complete")
+                        player.mark_audio_end()
                 except json.JSONDecodeError:
                     pass
     except websockets.exceptions.ConnectionClosed:
@@ -162,6 +210,24 @@ async def audio_playback(player: AudioPlayer, stop_event: asyncio.Event):
     while not stop_event.is_set():
         if not player.play_chunk():
             await asyncio.sleep(0.01)
+
+
+async def playback_notifier(ws, player: AudioPlayer, stop_event: asyncio.Event):
+    """Wait for playback completion and notify the server."""
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(player.playback_done_event.wait(), timeout=0.2)
+        except asyncio.TimeoutError:
+            continue
+        if stop_event.is_set():
+            break
+        player.playback_done_event.clear()
+        print("\n[TTS] Playback complete, notifying server")
+        try:
+            await ws.send(json.dumps({"type": "playback_complete"}))
+        except Exception as e:
+            if not stop_event.is_set():
+                print(f"[playback_notifier] Error: {e}")
 
 
 async def run_client(server_url: str, camera_id: int = 0, enable_video: bool = True):
@@ -184,9 +250,10 @@ async def run_client(server_url: str, camera_id: int = 0, enable_video: bool = T
         ) as ws:
             print("Connected. Press Ctrl+C to exit.")
             tasks = [
-                asyncio.create_task(mic_sender(ws, pa_instance, stop_event)),
+                asyncio.create_task(mic_sender(ws, pa_instance, player, stop_event)),
                 asyncio.create_task(ws_receiver(ws, player, stop_event)),
                 asyncio.create_task(audio_playback(player, stop_event)),
+                asyncio.create_task(playback_notifier(ws, player, stop_event)),
             ]
             if enable_video:
                 tasks.append(asyncio.create_task(video_sender(ws, stop_event, camera_id)))

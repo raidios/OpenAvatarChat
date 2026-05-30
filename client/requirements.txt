@@ -1,0 +1,7 @@
+# 勿装 opencv-python-headless，否则 cv2.imshow / --display 不可用
+opencv-contrib-python
+numpy
+pyaudio
+websockets
+pyserial
+PySide6>=6.6.0

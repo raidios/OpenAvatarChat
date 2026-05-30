@@ -1,0 +1,33 @@
+---
+description: 项目编码规范：命名约定、文件组织、代码风格
+globs: "**/*.c,**/*.h"
+alwaysApply: false
+---
+
+# 编码规范
+
+## 命名约定
+- **驱动文件**: `ax_<module>.c/.h` (如 `ax_motor.c`, `ax_uart1.c`)
+- **应用文件**: `ax_<function>.c/.h` (如 `ax_robot.c`, `ax_control.c`)
+- **函数前缀**: `AX_<MODULE>_<Action>` (如 `AX_MOTOR_Init()`, `AX_ENCODER_A_GetCounter()`)
+- **全局变量前缀**: `ax_` (如 `ax_motor_kp`, `ax_imu_gyro_data`)
+- **FreeRTOS 任务**: `<Name>_Task` (如 `Robot_Task`, `Key_Task`)
+- **类型定义**: 大写 + 下划线 (如 `ROBOT_Velocity`, `ROBOT_Wheel`)
+
+## 文件组织
+- 驱动代码放 `Driver/` 目录，只处理硬件寄存器操作
+- 应用逻辑放 `Robot/` 目录，调用驱动层 API
+- 新增 .c 文件需同步更新 Keil 工程 `Project/xproject.uvprojx`
+- 新增头文件目录需在 Keil 工程 Include Paths 中添加
+
+## 代码风格
+- 缩进: Tab (宽度 4)
+- 花括号: 换行风格
+- 源文件编码: GB2312/GBK (非 UTF-8，Keil AC5 的限制)
+- 注释语言: 中文
+
+## StdPeriph 库使用
+- 使用标准外设库 API，不直接操作寄存器 (除 bit-bang I2C)
+- GPIO 配置通过 `GPIO_Init()` + `GPIO_InitTypeDef` 结构体
+- 时钟使能: `RCC_APBxPeriphClockCmd()` 在各驱动 Init 函数中
+- NVIC 优先级分组: Group 2 (2位抢占 + 2位子优先级)

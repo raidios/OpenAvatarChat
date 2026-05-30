@@ -38,3 +38,24 @@ exp/
 uv.lock
 logs/
 .lock
+
+# Teach / motion artifacts: 录制的 clip 是 per-machine 用户数据；calib 结果
+# 也是 per-camera 标定值，不进版本控制。
+# data/teach_bindings.json 保留在仓库里作为缺省值；用户可以现场覆盖。
+data/motion_clips/*.json
+config/camera_calib.json
+
+
+# --- STM32/Keil firmware build artifacts & per-user state ---
+firmware/**/Project/Objects/
+firmware/**/Project/Listings/
+firmware/**/Project/DebugConfig/
+firmware/**/Project/*.uvguix.*
+firmware/**/Project/*.uvoptx
+firmware/**/Project/*.map
+firmware/**/Project/*.lst
+firmware/**/Project/*.htm
+firmware/**/Project/*.bak
+firmware/**/Project/*.scr
+firmware/**/Project/JLinkSettings.ini
+firmware/**/新建*.xlsx

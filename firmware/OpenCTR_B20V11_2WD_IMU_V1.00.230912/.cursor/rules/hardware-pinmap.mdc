@@ -1,0 +1,79 @@
+---
+description: 控制板硬件引脚映射及外设资源分配表
+alwaysApply: true
+---
+
+# 硬件引脚映射 (OpenCTR B20 V1.1)
+
+## GPIO 引脚分配
+
+### PORTA
+| 引脚 | 功能 | 模式 | 驱动文件 | 使用状态 |
+|------|------|------|----------|----------|
+| PA0 | Servo S5 (TIM5_CH1) | AF_PP | ax_servo.c | 未初始化 |
+| PA1 | Servo S6 (TIM5_CH2) / CCD ADC | AF_PP/AIN | ax_servo.c / ax_ccd.c | 未初始化 |
+| PA2 | USART2 TX (蓝牙) | AF_PP | ax_uart2.c | 已用 |
+| PA3 | USART2 RX (蓝牙) | IN_FLOATING | ax_uart2.c | 已用 |
+| PA4 | OLED DC | Out_PP | ax_oled.c | 已用 |
+| PA5 | SPI1 SCK (OLED) | AF_PP | ax_oled.c | 已用 |
+| PA6 | OLED RST | Out_PP | ax_oled.c | 已用 |
+| PA7 | SPI1 MOSI (OLED) | AF_PP | ax_oled.c | 已用 |
+| PA8 | 绿色 LED | Out_PP | ax_led.c | 已用 |
+| PA9 | USART1 TX (调试) | AF_PP | ax_uart1.c | 已用 |
+| PA10 | USART1 RX (调试) | IN_FLOATING | ax_uart1.c | 已用 |
+| PA11 | MPU6050 SCL (软件I2C) | Out_PP | ax_mpu6050.c | 已用 |
+| PA12 | MPU6050 SDA (软件I2C) | Out_PP | ax_mpu6050.c | 已用 |
+| PA15 | Encoder A CH1 (TIM2 全重映射) | IN_FLOATING | ax_encoder.c | 已用 |
+
+### PORTB
+| 引脚 | 功能 | 模式 | 驱动文件 | 使用状态 |
+|------|------|------|----------|----------|
+| PB0 | 按键 KEY | IPU | ax_key.c | 已用 |
+| PB1 | 电池电压 ADC (ADC2_CH9) | AIN | ax_vin.c | 已用 |
+| PB3 | Encoder A CH2 (TIM2 全重映射) | IN_FLOATING | ax_encoder.c | 已用 |
+| PB4 | Encoder B CH1 (TIM3 部分重映射) | IN_FLOATING | ax_encoder.c | 已用 |
+| PB5 | Encoder B CH2 (TIM3 部分重映射) | IN_FLOATING | ax_encoder.c | 已用 |
+| PB6 | Motor PWM CH1 (TIM4) | AF_PP | ax_motor.c | 已用 |
+| PB7 | Motor PWM CH2 (TIM4) | AF_PP | ax_motor.c | 已用 |
+| PB8 | Motor PWM CH3 (TIM4) | AF_PP | ax_motor.c | 已用 |
+| PB9 | Motor PWM CH4 (TIM4) | AF_PP | ax_motor.c | 已用 |
+| PB11 | SBUS RX (USART3) | IN_FLOATING | ax_sbus.c | 未初始化 |
+| PB12 | 前超声波 Trig (原巡线1) | Out_PP | ax_ultrasonic.c | 已用 |
+| PB13 | 前超声波 Echo (原巡线2) | IN_FLOATING | ax_ultrasonic.c | 已用 |
+| PB14 | 后超声波 Trig (原巡线3) | Out_PP | ax_ultrasonic.c | 已用 |
+| PB15 | 后超声波 Echo (原巡线4/RGB) | IN_FLOATING | ax_ultrasonic.c | 已用 |
+
+### PORTC
+| 引脚 | 功能 | 模式 | 驱动文件 | 使用状态 |
+|------|------|------|----------|----------|
+| PC0 | PS2 CLK (输入) | IPU | ax_ps2.c | 已用 |
+| PC1-3 | PS2 CMD/ATT/DAT | Out_PP | ax_ps2.c | 已用 |
+| PC4 | 红色 LED | Out_PP | ax_led.c | 已用 |
+| PC6-9 | Servo S1-S4 (TIM8) | AF_PP | ax_servo.c | 未初始化 |
+| PC10 | UART4 TX | AF_PP | ax_uart4.c | **可用** |
+| PC11 | UART4 RX | IN_FLOATING | ax_uart4.c | **可用** |
+| PC12 | UART5 TX | AF_PP | ax_uart5.c | **可用** |
+| PC13 | 蜂鸣器 BEEP | Out_PP | ax_beep.c | 已用 |
+
+### PORTD
+| 引脚 | 功能 | 模式 | 驱动文件 | 使用状态 |
+|------|------|------|----------|----------|
+| PD2 | UART5 RX | IN_FLOATING | ax_uart5.c | **可用** |
+
+## 定时器资源
+| 定时器 | 用途 | 频率/周期 | 状态 |
+|--------|------|-----------|------|
+| TIM2 | 编码器A (正交) | 硬件计数 | 已用 |
+| TIM3 | 编码器B (正交) | 硬件计数 | 已用 |
+| TIM4 | 电机PWM (4通道) | ~20kHz (ARR=3599, PSC=0) | 已用 |
+| TIM5 | Servo S5-S6 | 50Hz | 未初始化 |
+| TIM8 | Servo S1-S4 | 50Hz | 未初始化 |
+| SysTick | FreeRTOS Tick | 1kHz | 已用 |
+
+## 可用于扩展的资源
+- **UART4/UART5**: 树莓派上位机通信首选
+- **Servo (TIM5/TIM8)**: 6路舵机 PWM 输出可用
+- **巡线传感器 (PB12-15)**: 4路 GPIO 输入
+- **SBUS (USART3)**: 航模遥控器接收
+- **RGB LED (SPI2+DMA)**: WS2812 灯带
+- **TIM1**: 未被使用，可用于其他定时功能

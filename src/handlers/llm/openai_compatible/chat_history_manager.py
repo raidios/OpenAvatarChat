@@ -19,6 +19,20 @@ name_dict = {
 }
 
 
+# 仅用于历史回写：把已知的情绪动作标签 [happy]/[shy]/[apologize]/[scared] 等剥掉，
+# 避免污染 LLM 的上下文。保留未知方括号片段（路名/缩写）原样。
+_ACTION_TAG_HISTORY_RE = re.compile(
+    r"\[\s*(?:happy|shy|apologize|scared)\s*\]",
+    flags=re.IGNORECASE,
+)
+
+
+def strip_action_tags(text: str) -> str:
+    if not text:
+        return text
+    return _ACTION_TAG_HISTORY_RE.sub("", text)
+
+
 def filter_text(text):
     pattern = r"[^a-zA-Z0-9\u4e00-\u9fff,.\~!?，。！？ ]"  # 匹配不在范围内的字符
     filtered_text = re.sub(pattern, "", text)
@@ -41,7 +55,7 @@ class ChatHistory:
         def history_to_message(history: HistoryMessage):
             return {
                 "role": name_dict[history.role],
-                "content": filter_text(history.content),
+                "content": filter_text(strip_action_tags(history.content)),
             }
         history = self.message_history
         messages = list(map(history_to_message, history))

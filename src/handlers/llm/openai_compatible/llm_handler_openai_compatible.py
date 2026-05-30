@@ -41,6 +41,7 @@ class LLMContext(HandlerContext):
         self.current_image = None
         self.history = None
         self.enable_video_input = False
+        self.shared_states = None
 
 
 class HandlerLLM(HandlerBase, ABC):
@@ -74,12 +75,30 @@ class HandlerLLM(HandlerBase, ABC):
             inputs=inputs, outputs=outputs,
         )
 
+    @staticmethod
+    def _resolve_system_prompt(raw_value: str) -> str:
+        """If raw_value points to an existing file, read its content; otherwise use it as-is."""
+        if not raw_value:
+            return raw_value
+        path = raw_value
+        if not os.path.isabs(path):
+            from engine_utils.directory_info import DirectoryInfo
+            path = os.path.join(DirectoryInfo.get_project_dir(), path)
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+            logger.info(f"System prompt loaded from file: {path} ({len(content)} chars)")
+            return content
+        logger.info(f"System prompt used as inline string ({len(raw_value)} chars)")
+        return raw_value
+
     def load(self, engine_config: ChatEngineConfigModel, handler_config: Optional[BaseModel] = None):
         if isinstance(handler_config, LLMConfig):
             if handler_config.api_key is None or len(handler_config.api_key) == 0:
                 error_message = 'api_key is required in config/xxx.yaml, when use handler_llm'
                 logger.error(error_message)
                 raise ValueError(error_message)
+            handler_config.system_prompt = self._resolve_system_prompt(handler_config.system_prompt)
 
     def create_context(self, session_context, handler_config=None):
         if not isinstance(handler_config, LLMConfig):
@@ -91,8 +110,8 @@ class HandlerLLM(HandlerBase, ABC):
         context.api_url = handler_config.api_url
         context.enable_video_input = handler_config.enable_video_input
         context.history = ChatHistory(history_length=handler_config.history_length)
+        context.shared_states = session_context.shared_states
         context.client = OpenAI(
-            # 若没有配置环境变量，请用百炼API Key将下行替换为：api_key="sk-xxx",
             api_key=context.api_key,
             base_url=context.api_url,
         )
@@ -127,6 +146,9 @@ class HandlerLLM(HandlerBase, ABC):
         chat_text = context.input_texts
         chat_text = re.sub(r"<\|.*?\|>", "", chat_text)
         if len(chat_text) < 1:
+            logger.info("LLM: empty input text, skipping")
+            if context.shared_states is not None and context.shared_states.wake_session_active:
+                context.shared_states.enable_vad = True
             return
         logger.info(f'llm input {context.model_name} {chat_text} ')
         current_content = context.history.generate_next_messages(chat_text, 
@@ -159,7 +181,9 @@ class HandlerLLM(HandlerBase, ABC):
             context.history.add_message(HistoryMessage(role="avatar", content=context.output_texts))
         except Exception as e:
             logger.error(e)
-            if (isinstance(e, APIStatusError)):
+            if context.shared_states is not None and context.shared_states.wake_session_active:
+                context.shared_states.enable_vad = True
+            if isinstance(e, APIStatusError):
                 response = e.body
                 if isinstance(response, dict) and "message" in response:
                     response = f"{response['message']}"

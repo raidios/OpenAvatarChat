@@ -1,0 +1,115 @@
+---
+description: 当前部署机器上接的讯飞 m260C 6+1 环形麦阵 / WHEELTEC R818 控制板的硬件事实、串口/ADB 接入约束、两种工作模式与已部署工具
+alwaysApply: true
+---
+
+# m260C 麦阵 + R818 控制板事实（USB 接到本机 Pi 5）
+
+涉及音频采集、唤醒、ASR 输入、阵列信号处理时按下列事实推理。**不要**假设标准 USB Audio Class 能直接拿到多通道——它默认只暴露 1 ch。
+
+## 硬件 / 链路
+
+- 板子：WHEELTEC R818（Allwinner sun50iw10p1 aarch64，OpenWrt + 内核 4.9.191），上面焊一颗 **iFlytek m260C 环形 6+1 麦阵**
+- 板载 ADC：**AC107**（ALSA 卡 `sndac107`，`/dev/snd/pcmC1D0c`，**8 ch × 16 kHz × S16_LE**）
+- USB 口暴露 3 个 function：
+  - **CDC-ACM 串口** → `/dev/ttyACM0` 115200，板内 UART1，与 demo 走 `0xA5` 协议
+  - **ADB**（Vendor 0x18d1 / Product 0xD002，root 直通）
+  - **UAC1 Gadget** → ALSA 卡 `UAC1Gadget`，**只 1 ch**（demo 处理后输出，不是 raw）
+
+## 板上的 adbd 限制（旧版本，绕不过去）
+
+- `adb shell` **永远走 PTY**（LF→CRLF 翻译会破坏二进制流）
+- `adb shell -T` **不支持**（`error: device only supports allocating a pty`）
+- `adb exec-out` **不支持**（`error: closed`）
+- `adb reverse` **不支持**
+- `adb forward` **可用**（设备 → 主机端口转发是唯一可靠的二进制通道）
+- 板上 BusyBox 1.27.2 **没编进** `nc -l` listen 模式 / `stty` applet
+
+→ 推送二进制、走 `adb forward` 是唯一可靠的方式；直接 `adb shell 'cmd > pipe'` 不可靠
+
+## 文件系统持久化（OpenWrt overlay 模式）
+
+```
+/dev/root          on /rom    type squashfs (ro)        ← 出厂只读
+/dev/by-name/rootfs_data on /overlay type ext4 (rw)     ← 修改落这里
+overlayfs:/overlay on /       type overlay              ← 合并视图
+```
+
+→ `/data/build/`、`/etc/init.d/`、`/etc/rc.d/` 都可写持久化
+
+## 两种工作模式（互斥使用 `hw:1,0`）
+
+| 模式 | 启动方式 | 输出 | 用途 |
+|---|---|---|---|
+| **firmware demo** | `vtn_init` service / `/data/build/use_demo.sh` | UAC1 单声道（带束波/AEC/NS/唤醒） | 经典语音助手 |
+| **raw 8ch** | `audio_stream` service / `/data/build/use_audio_server.sh` | TCP 9999 上 8 ch raw | 自己的多通道处理 |
+
+通道分布（raw 模式）：**ch0~ch5 = 6 个环形麦**，**ch6,ch7 = 参考通道**（RMS 远低于麦）
+
+## ch6/ch7 参考通道的真实性质（AEC 关键）
+
+ch6/ch7 是**扬声器电信号直连 ref 输入**——把功放（或 pre-amp）输出的同一路 line 旁路接到 R818 板的 ref pin，这是 m260C 手册给出的标准 AEC 接法。**ref 跟 mic 之间是简单 LTI**：`mic ≈ ref ⊛ h_room + noise`，房间 IR 长度通常 < 100 ms（小空间）。这是 Speex/NLMS 期望的"干净 reference"，应当能稳定收敛 15-25 dB ERLE。
+
+实测/调参经验（`tools/probe_aec_isolation.py` chirp 测试）：
+
+- ref 跟 mic 在同一 capture stream 内，相对延迟 ~1 ms（chirp 实测 lag mic +510 ms vs ref +509 ms）。AEC filter 不需要长 tail。
+- NLMS filter 长度 sweep（chirp）：50ms ?  100ms +10  200ms +7  400ms +3  → 默认 100 ms。
+- Speex EchoCanceller 反复触发内部 misalignment detector `got slapped (reset)`：filter 学不收敛，ERLE ≈ 0。原因待查（疑似 ref/mic 能量平衡或 speex 内部 NLP 阈值与板上 ref 衰减不匹配；可能要从 speex API 调 frame_size / set_sampling_rate / VAD 联动）。
+- 因此 `make_aec(auto)` 当前默认走 NLMS，**直到 Speex reset 问题查清**。`backend="speex"` 仍可强制使用做对照测试。
+
+**架构上不需要 software reference**——硬件 line-in 已经是干净 ref。如果将来真要旁路 `AudioPlayer` PCM 当软件 ref，那是为了**covers 喇叭功放/喇叭非线性失真**这种 ref 物理路径无法捕获的部分（功放削顶时 mic 收到的失真分量在 ref 里没有）。但那是优化项不是必需。
+
+## 物理安装方位（车体坐标 vs 麦阵坐标）
+
+俯视小车，麦阵相对车头有约 30° 的旋转偏移。两套坐标系：
+
+```
+mic frame  : 0° = ch0 方向（SRP-PHAT 的原始输出）
+body frame : 0° = 车头正前方
+```
+
+`mic_yaw_offset_deg` 的语义是"**车头正前方的声源在 mic frame 下读出的 azimuth**"。换言之，把人放在车头 1.5 m 前实测出的 DOA 数值就是这个 offset：
+
+```
+mic_yaw_offset_deg = mic_az_of_body_zero   # 实测标定值
+mic_az  = body_az + mic_yaw_offset_deg
+body_az = mic_az  - mic_yaw_offset_deg
+```
+
+实测：本机器板子安装下，body 0° 声源 → mic +30°，所以 `mic_yaw_offset_deg = +30`（这是 `client/main.py --farfield-mic-yaw-offset-deg` 的默认值）。如果以后重装麦阵，就把人放在车头正前方再跑一次 `make farfield-source-smoke`，把控制台打印的 `DOA mic frame` 直接抄进默认值。
+
+DSP 内部（SRP-PHAT、MVDR、`extrinsic.npz`）一律跑 **mic frame**，不要在那里揉车体偏移；车体方位↔麦阵方位的转换只在面向上层（`FarfieldAudioSource`、ROS2 `perception_node`、teach UI、运动控制）的入口/出口做。
+
+## 已部署工具（`thirdparty/M2_SDK/`）
+
+```
+live_stream/                  raw 8ch 实时流方案（路径 B）
+  install_to_board.sh         一键部署（host 端）
+  bin/audio_server.aarch64    板上 TCP server（静态链接 aarch64）
+  host/live_stream.py         主机 Python 客户端：CLI + LiveStream 库
+  README.md                   架构、用法、设计取舍
+
+probe/                        串口协议探查 + 离线 dump_audio
+  aiui_uart.py                0xA5 串口协议客户端（含 handshake/ack）
+  dump_raw_audio.py           离线 8 ch dump（≤8s，调用 dump_audio + adb pull）
+  analyze_pcm.py              PCM 通道分析
+
+HARDWARE_NOTES.md             完整调研记录与避坑清单
+```
+
+## 接入代码时遵守
+
+- 拉实时多通道：`from live_stream import LiveStream`（在 `host/` 目录）。**不要**从 ALSA UAC1Gadget 抓——那只 1 ch
+- 想要带 DSP 的单通道：保留 firmware demo 模式，从 UAC1Gadget 卡读 1 ch；**不要**同时启 audio_server（争用 `hw:1,0` 会失败）
+- 串口控制走 `/dev/ttyACM0` + `aiui_uart.AIUIClient`；不要直接 `serial.write` raw 字节，必须按 0xA5 帧 + 校验
+- 板上自定义脚本/binary 放 `/data/build/`（持久），开机自启服务放 `/etc/init.d/`（持久）
+
+## 自检（确认链路健康）
+
+```bash
+adb devices                                   # 期望: bc00...dd0  device
+ls /dev/ttyACM0                               # 期望: 存在
+adb shell 'ps | grep -E "audio_server|demo"'  # 二选一在跑
+adb shell 'netstat -tnl | grep 9999'          # raw 模式下 listen
+.venv/bin/python thirdparty/M2_SDK/live_stream/host/live_stream.py capture --duration 2
+```

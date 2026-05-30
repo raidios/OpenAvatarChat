@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from typing import Dict, Optional, Any, Union, Tuple
 from uuid import uuid4
 
@@ -32,6 +33,7 @@ class WsClientSessionDelegate(ClientSessionDelegate):
         self.timestamp_generator = None
         self.data_submitter = None
         self.shared_states = None
+        self._last_ui_snap: Optional[tuple] = None
         self.output_queues = {
             EngineChannelType.AUDIO: asyncio.Queue(),
             EngineChannelType.TEXT: asyncio.Queue(),
@@ -89,7 +91,8 @@ class WsClientSessionDelegate(ClientSessionDelegate):
 
     def emit_signal(self, signal: ChatSignal):
         if signal.source_type == ChatSignalSourceType.CLIENT and signal.type == ChatSignalType.END:
-            self.shared_states.enable_vad = True
+            if self.shared_states is not None and self.shared_states.wake_session_active:
+                self.shared_states.enable_vad = True
 
     def clear_data(self):
         for data_queue in self.output_queues.values():
@@ -102,10 +105,35 @@ class WsClientSessionDelegate(ClientSessionDelegate):
                 chat_data: Optional[ChatData] = await self.get_data(EngineChannelType.AUDIO, timeout=0.05)
                 if chat_data is not None and chat_data.data is not None:
                     audio = chat_data.data.get_main_data()
+
+                    # 顺序约定（与客户端解码协议保持一致）：
+                    #   1) 该 bundle 携带的 prefix action_tags  -> JSON {type:"action_tag", phase:"before"}
+                    #   2) 该 bundle 的 PCM 二进制（哪怕是末包 240 帧的零长度也照发）
+                    #   3) 该 bundle 携带的 tail_action_tags    -> JSON {type:"action_tag", phase:"after"}
+                    #   4) 若 avatar_speech_end=True            -> JSON {type:"audio_end"}
+                    #
+                    # 这样客户端的 ws_receiver 把音频与 marker 按 push 顺序进
+                    # 同一 deque，play_chunk 在出队遇到 marker 时触发动作。
+                    prefix_tags = chat_data.data.get_meta("action_tags", None)
+                    if prefix_tags:
+                        await websocket.send_text(json.dumps({
+                            "type": "action_tag",
+                            "phase": "before",
+                            "tags": prefix_tags,
+                        }))
+
                     if audio is not None:
                         audio = audio.squeeze()
                         pcm_bytes = (audio * 32767).astype(np.int16).tobytes()
                         await websocket.send_bytes(bytes([MSG_TYPE_AUDIO]) + pcm_bytes)
+
+                    tail_tags = chat_data.data.get_meta("tail_action_tags", None)
+                    if tail_tags:
+                        await websocket.send_text(json.dumps({
+                            "type": "action_tag",
+                            "phase": "after",
+                            "tags": tail_tags,
+                        }))
 
                     speech_end = chat_data.data.get_meta("avatar_speech_end", False)
                     if speech_end:
@@ -115,6 +143,22 @@ class WsClientSessionDelegate(ClientSessionDelegate):
             except Exception as e:
                 logger.opt(exception=True).error(f"Error in ws send loop: {e}")
                 break
+
+            if self.shared_states is not None:
+                snap = (
+                    bool(self.shared_states.wake_session_active),
+                    bool(self.shared_states.enable_vad),
+                )
+                if snap != self._last_ui_snap:
+                    self._last_ui_snap = snap
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "type": "ui_state",
+                            "wake_session": snap[0],
+                            "vad_enabled": snap[1],
+                        }))
+                    except Exception:
+                        pass
 
             try:
                 text_data: Optional[ChatData] = await self.get_data(EngineChannelType.TEXT, timeout=0.01)
@@ -171,6 +215,27 @@ class WsClientSessionDelegate(ClientSessionDelegate):
                             type=ChatSignalType.END,
                         )
                         self.emit_signal(signal)
+                    elif ctrl_type == "playback_complete":
+                        if self.shared_states is not None and self.shared_states.wake_session_active:
+                            logger.info("Client playback complete, re-enabling VAD")
+                            self.shared_states.enable_vad = True
+                            self.shared_states.last_interaction_time = time.monotonic()
+                    elif ctrl_type == "wake_word":
+                        # Client-side KWS fired. Hand the event to
+                        # ``HandlerWakeWord`` via shared_states; it
+                        # will start the wake session on its next
+                        # ``handle()`` tick (next mic frame, ~30 ms).
+                        if self.shared_states is not None:
+                            keyword = ctrl.get("keyword") or "wake"
+                            doa = ctrl.get("doa_body_deg")
+                            self.shared_states.external_wake_event = (
+                                str(keyword),
+                                float(doa) if doa is not None else None,
+                            )
+                            logger.info(
+                                "Client wake event received: "
+                                f"keyword={keyword!r} doa={doa}"
+                            )
                 except json.JSONDecodeError:
                     logger.warning("Invalid JSON control message from client")
 

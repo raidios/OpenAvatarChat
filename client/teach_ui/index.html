@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小黑 · 示教 / 调试</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+  <h1>小黑 · 示教 / 调试</h1>
+  <div id="conn-indicator" class="indicator off">connecting…</div>
+</header>
+
+<main>
+  <!-- 1. live status -->
+  <section class="panel" id="panel-status">
+    <h2>当前状态</h2>
+    <div class="grid status-grid">
+      <div><span class="label">电池</span><span class="value" id="st-bat">—</span></div>
+      <div><span class="label">Yaw</span><span class="value" id="st-yaw">—</span></div>
+      <div><span class="label">速度 (vx/vy/vw)</span><span class="value" id="st-vel">—</span></div>
+      <div><span class="label">PS2 stick L</span><span class="value" id="st-ljoy">—</span></div>
+      <div><span class="label">PS2 stick R</span><span class="value" id="st-rjoy">—</span></div>
+      <div><span class="label">PS2 btn</span><span class="value" id="st-ps2btn">—</span></div>
+      <div><span class="label">ctrl source</span><span class="value" id="st-ctrl">—</span></div>
+      <div><span class="label">chat</span><span class="value" id="st-chat">—</span></div>
+      <div><span class="label">表情 override</span><span class="value" id="st-expr">—</span></div>
+      <div><span class="label">motion 队列</span><span class="value" id="st-motion">—</span></div>
+    </div>
+  </section>
+
+  <!-- 2. camera -->
+  <section class="panel" id="panel-camera">
+    <h2>摄像头</h2>
+    <div class="camera-controls">
+      <label><input type="checkbox" id="cam-overlay"> 显示 ArUco overlay</label>
+      <label>fps <input type="number" id="cam-fps" min="1" max="15" value="10" style="width:4em"></label>
+      <button id="cam-start">开始流</button>
+      <button id="cam-stop">停止</button>
+      <button id="cam-snap">截图</button>
+    </div>
+    <div class="camera-view">
+      <img id="cam-img" alt="(摄像头流未启动)">
+    </div>
+  </section>
+
+  <!-- 3. calibration -->
+  <section class="panel" id="panel-calib">
+    <h2>相机内参标定</h2>
+    <div id="calib-current" class="hint">当前 calib：—</div>
+    <div class="calib-form">
+      <label>rows <input type="number" id="ca-rows" value="9" min="3" max="30"></label>
+      <label>cols <input type="number" id="ca-cols" value="6" min="3" max="30"></label>
+      <label>square (mm) <input type="number" id="ca-sq" value="25" min="1" max="200" step="0.1"></label>
+      <label>min frames <input type="number" id="ca-min" value="15" min="3" max="200"></label>
+      <label>interval (s) <input type="number" id="ca-int" value="1.0" min="0.1" max="10" step="0.1"></label>
+      <button id="ca-start">Start</button>
+      <button id="ca-capture" disabled>Capture</button>
+      <button id="ca-finish" disabled>Finish</button>
+      <button id="ca-abort" disabled>Abort</button>
+    </div>
+    <div id="calib-progress" class="hint">未启动</div>
+    <pre id="calib-result"></pre>
+  </section>
+
+  <!-- 4. mic monitor -->
+  <section class="panel" id="panel-mic">
+    <h2>麦克风监听</h2>
+    <div class="mic-controls">
+      <button id="mic-toggle">开启监听</button>
+      <span id="mic-info" class="hint">未连接</span>
+    </div>
+    <div class="meter-row">
+      <div class="meter-label">level</div>
+      <div class="meter"><div id="mic-meter-bar"></div></div>
+      <div id="mic-meter-text" class="meter-text">—</div>
+    </div>
+  </section>
+
+  <!-- 5. teach -->
+  <section class="panel" id="panel-teach">
+    <h2>示教录制</h2>
+    <div class="record-controls">
+      <button id="rec-start">开始录制</button>
+      <button id="rec-stop" disabled>停止</button>
+      <button id="rec-discard">丢弃</button>
+      <span id="rec-status" class="hint">空闲</span>
+    </div>
+    <canvas id="rec-canvas" width="800" height="120"></canvas>
+    <div class="crop-row">
+      <label>起点 (ms) <input type="number" id="crop-start" value="0" min="0"></label>
+      <label>终点 (ms) <input type="number" id="crop-end" value="0" min="0"></label>
+      <input type="text" id="rec-name" placeholder="clip 名字">
+      <button id="rec-save">保存为 clip</button>
+    </div>
+  </section>
+
+  <!-- 6. library + bindings -->
+  <section class="panel" id="panel-library">
+    <h2>动作库</h2>
+    <div id="clip-list" class="clip-list"></div>
+  </section>
+
+  <section class="panel" id="panel-bindings">
+    <h2>情绪绑定</h2>
+    <div id="binding-cards" class="binding-cards"></div>
+    <div class="say-row">
+      <input type="text" id="say-text" placeholder="例如：[happy]你好啊">
+      <button id="say-btn">触发标签解析</button>
+    </div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

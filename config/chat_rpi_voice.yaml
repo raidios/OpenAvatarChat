@@ -14,16 +14,37 @@ default:
         module: client/ws_client/client_handler_ws
       WakeWord:
         module: wakeword/sherpa_kws/wakeword_handler_sherpa
+        # Wake detection is now done on the client (M260C 6-mic
+        # SRP-PHAT + Sherpa KWS). The server keeps WakeWord around
+        # for session state, wake-reply TTS, farewell + timeout, but
+        # skips local KWS decoding entirely (saves ~1 CPU thread on
+        # Pi5). Toggle to false if running without the far-field
+        # client (legacy single-mic / browser).
+        external_wake_only: true
+        # The fields below are no-ops while external_wake_only=true
+        # (KWS model is not loaded), but keep them so toggling back
+        # works without re-typing.
         model_dir: "models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20"
         keywords_file: "config/keywords.txt"
         keywords_score: 1.5
-        keywords_threshold: 0.25
-        num_threads: 2
+        keywords_threshold: 0.15
+        num_threads: 1
+        wake_reply_text: "你好，有什么可以帮你的？"
+        farewell_reply_text: "好的，再见！"
+        farewell_keywords:
+          - "再见"
+          - "拜拜"
+          - "结束"
+          - "退下"
+        session_timeout: 15.0
+        tts_model_name: "qwen3-tts-flash"
+        tts_voice: "Cherry"
+        tts_sample_rate: 24000
       SileroVad:
         module: vad/silerovad/vad_handler_silero
-        speaking_threshold: 0.5
+        speaking_threshold: 0.25
         start_delay: 2048
-        end_delay: 5000
+        end_delay: 8000
         buffer_look_back: 5000
         speech_padding: 512
       QwenASR:
@@ -42,5 +63,5 @@ default:
         model_name: "qwen3.5-flash"
         enable_video_input: true
         history_length: 20
-        system_prompt: "你扮演一个正常的女孩，说话需要用口语化的表达，简短，准确。你能看到画面，但画面只是回答的参考，不需要每一次都参考画面的内容。仅仅在当前对话涉及到画面内容时，你才需要去观察当前输入画面的内容。"
+        system_prompt: "config/system_prompt.txt"
         api_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"

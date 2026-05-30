@@ -13,6 +13,20 @@ from chat_engine.data_models.session_info_data import SessionInfoData, IOQueueTy
 class SharedStates:
     active: bool = False
     enable_vad: bool = False
+    wake_session_active: bool = False
+    farewell_pending: bool = False
+    last_interaction_time: float = 0.0
+    farewell_keywords: list = None
+    # Externally-driven wake event. The client owns the M260C audio
+    # buffer and the matching DOA, so it runs Sherpa KWS locally and
+    # tells the server "wake fired" via a control message rather than
+    # the server re-running KWS on the same audio. Set by
+    # ``client_handler_ws`` when a ``{"type": "wake_word", ...}``
+    # message arrives. Format: ``(keyword, doa_body_deg | None)``.
+    # ``HandlerWakeWord`` consumes it when ``external_wake_only`` is
+    # configured; consumption clears the field. None when no wake
+    # event is pending.
+    external_wake_event: object = None
 
 
 class SessionContext(object):

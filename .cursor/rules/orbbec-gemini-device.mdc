@@ -1,0 +1,274 @@
+---
+description: 当前部署机器上接的奥比中光 Gemini Pro（型号 SV1301S_U3，PID 0x0614 + 0x0511）深度相机的硬件事实、SDK 选型约束、Depth/IR/Color/RGB-D 的 Python 接入方式与自检命令
+alwaysApply: true
+---
+
+# Orbbec Gemini Pro（SV1301S_U3）深度相机事实（USB 接到本机 Pi 5）
+
+涉及深度感知、距离判定、人脸/手势 3D 定位、RGB-D 融合、IR 点云、点云时按下列事实推理。**不要**当成 UVC 相机直接 V4L2 抓深度——深度走 OpenNI 私有协议，必须经 OrbbecSDK；RGB 既可走 SDK 也可走 V4L2，见下文 "Color 走 SDK 还是走 cv2 UVC"。**不要**升级到 OrbbecSDK v2，本设备不在其支持列表里。
+
+## 硬件 / 链路
+
+- 设备：Orbbec **Gemini Pro**，出厂型号 `SV1301S_U3`（`_U3` 表示 USB 3.0 capable model），结构光
+- USB function 拆成两个 PID（同一 vendor `2bc5`）：
+  - **`2bc5:0614`** → 深度 + IR + 控制，OpenNI 私有协议（**不是 UVC，没有 `/dev/video*`**），libusb 直开
+  - **`2bc5:0511`** → RGB UVC，作为 `/dev/video0,1` 暴露（Sonix UVC 桥）
+  - SDK v1 内部把这两个 USB 设备聚合成一个 `ob_device`，同时报告 3 个 sensor：IR + COLOR + DEPTH
+- 固件：`RD3013`（OpenNI 老固件，缺 watchdog / usb-core-type 查询，启动会打 warning，正常）
+- 深度与 IR **共享同一物理传感器**（结构光：IR 投影 + IR 摄像头 + 板上 ASIC 计算视差→深度）；OrbbecSDK 允许同 pipeline 同时启用 Depth + IR
+
+### USB 速率（实测 vs 标称）
+
+设备 model 名 `_U3` 表示**支持 USB 3.0**，但实际链路速率取决于线 + 口 + 中间 hub。当前部署机器实测在 `480M`（USB 2.0）：
+
+```
+Bus 002 (USB 2.0 root hub, 480M)
+  └─ VIA Labs hub (2109:2817, 480M)        ← 中间 hub 1
+      └─ Genesys Logic hub (05e3:0610, 480M) ← 中间 hub 2
+          ├─ 2bc5:0511 (RGB)   480M
+          └─ 2bc5:0614 (Depth) 480M
+Bus 003 (USB 3.0 root hub, 5000M)  ← 闲置
+```
+
+要切到 USB 3.0（5000M），三条同时满足：
+
+1. **USB 3.0 micro-B 数据线**（10 针双层接口，比普通 micro-B 物理上明显宽，常见原厂配件）
+2. **直接插 Pi 5 蓝色 USB 3 口**（`Bus 003`），不要插黑色 USB 2 口
+3. **中间不经过 USB 2 hub**（当前路径有两层 USB 2 hub，把整条链拉到了 USB 2 速率）
+
+USB 3.0 升级**不会**扩 D2C profile 矩阵（见下面），主要好处是同时跑高分辨率 RGB + depth + IR 不丢帧。
+
+## 系统层（已部署）
+
+- **udev 规则**：`/etc/udev/rules.d/99-obsensor-libusb.rules`（来自 OrbbecSDK v1.10.22）
+  - 让 `2bc5:0614` 与 `2bc5:0511` 变成 `crw-rw-rw-`，普通用户经 libusb 直开
+  - 创建软链 `/dev/gemini` → 深度，`/dev/gemini_rgb` → RGB
+- **usbfs 缓冲**：`usbcore.usbfs_memory_mb=128`，已写到 `/boot/firmware/cmdline.txt` 持久化
+  - 默认 16 MB 在多流 (Depth + IR + Color) 下不够，会触发 `OB_EVENT_TIMEOUT` / `Failed waiting on asynch transfer event`
+
+## 已部署 SDK 与封装（`thirdparty/OrbbecSDK_v1/`）
+
+```
+OrbbecSDK-v1.10.22/                官方预编译 v1.10.22（aarch64）
+  include/libobsensor/              C/C++ 头文件
+  lib/arm64/                        libOrbbecSDK.so / libdepthengine.so / libob_usb.so
+  misc/scripts/                     install_udev_rules.sh + 99-obsensor-libusb.rules
+
+probe/                              C++ 探针（headless，无 OpenCV 依赖）
+  probe_orbbec_depth.cpp            枚举设备 → 启动 depth → 抓 60 帧 → 统计 + dump PGM
+  probe_ir_profiles.cpp             枚举 IR profiles + 测试 Depth+IR 同 pipeline
+  probe_d2c.cpp                     列 SDK color profiles + 每档 HW/SW D2C profile + align filter 创建测试
+  build.sh                          g++ 一键编译
+
+python/                             Python 调用方案（自写 ctypes shim，**不依赖 pyorbbecsdk**）
+  libobgemini.cpp                   C ABI shim：obg_open(streams_bitmask) /
+                                    obg_wait_depth / obg_wait_ir / obg_wait_frames
+  libobgemini.so                    已编译，rpath 已锁到 ../OrbbecSDK-v1.10.22/lib/arm64
+  build.sh                          g++ 一键编译 shim
+
+  orbbec_gemini.py                  Python API（核心模块）：
+                                      OrbbecGemini(streams=["depth","ir"])
+                                      DeviceInfo / DepthFrame / IrFrame / FrameSet
+                                      ColorFrame / RgbdFrame
+                                      RgbdCalibration.load(npz) / .save(npz)
+                                      align_depth_to_color(depth_u16, scale, calib)
+  calibrate_rgbd.py                 双目标定 CLI：
+                                      `chessboard` 子命令：拿棋盘格做 IR<->RGB 标定
+                                      `fake` 子命令：基于 FOV+baseline 生成近似标定（仅验证 pipeline）
+
+  probe_depth.py                    venv smoke：60 帧 depth → 统计
+  probe_ir.py                       venv smoke：60 帧 Depth+IR 同步 frameset
+  probe_color.py                    venv smoke：90 帧 BGR @ /dev/video0
+  probe_rgbd.py                     venv smoke：read_rgbd() + 对齐到 color 平面
+  enum_color_modes.py               纯 ctypes 列出 V4L2 设备所有 (fmt, res, fps)
+  v4l2_mmap_probe.py                绕过 cv2，直接 mmap 测真实 USB 抓帧速率（诊断）
+  probe_rgbd_sdk.py                 venv smoke：SDK 路径 D2C end-to-end (depth+color, 出厂标定)
+  install_usbfs_persistent.sh       把 usbfs 写到 cmdline.txt（幂等，需 sudo）
+  uvc_rebind.sh                     sudo unbind/bind uvcvideo 让 /dev/video0 恢复（cv2 ↔ SDK 切换用）
+```
+
+## SDK 选型约束（**必须遵守**）
+
+- **禁止用 OrbbecSDK v2 / pyorbbecsdk v2-main**：Orbbec 官方在 [issue #154](https://github.com/orbbec/OrbbecSDK_v2/issues/154) 明确回复 "Gemini device is not included in the support plan for OrbbecSDK v2"。
+- **不用 pyorbbecsdk wheel**：PyPI 只有 x86_64/win/macOS wheel，aarch64 没有。本仓库 `libobgemini.so` 已覆盖需求。
+- **要扩展 API**：在 `libobgemini.cpp` 加 `extern "C"` 函数 + 在 `orbbec_gemini.py` 加 ctypes 绑定。**不要**改成动态加载 pyorbbecsdk。
+
+## Color 走 SDK 还是走 cv2 UVC（重要 trade-off）
+
+SDK v1.10.22 在本设备上同时把 0x0511 (RGB) + 0x0614 (Depth) 暴露为同一 `ob_device` 的 3 个 sensor，因此 RGB **既可以走 SDK** 也可以走 cv2 UVC。两条路实际功能差异（实测 30 帧）：
+
+|项|**SDK 路径**（`streams=["depth","color"]` + `read_rgbd_sdk()`）|cv2 UVC 路径（`open_color()` + `read_rgbd()`）|
+|---|---|---|
+|可用 color 分辨率|640×480 / 1280×720 / 1920×1080 (MJPG/RGB/BGRA)|640×480 / 1280×720 / 1280×960 / 1920×1080 / 2560×1440 / 2592×1944|
+|color/depth 时钟 skew|**~39 ms**（同一 `systemTimeStampUs()`，一帧周期内）|~326 ms（手动对齐到 `CLOCK_REALTIME`）|
+|D2C 对齐|**硬件 D2C，出厂标定，不用 chessboard**；aligned nz 实测 57%|手写 reproject，用 `align_depth_to_color()` + 自标定 npz；aligned nz 实测 30%|
+|EXPOSURE_AUTO_PRIORITY 坑|SDK 自己处理|要 ioctl 强制 0，否则 30→14 fps|
+|fps|24.9（受 frameset 配对约束）|30.1|
+
+### D2C 支持矩阵（`probe_d2c` 实测）
+
+**D2C 仅在 color = 640×480 时可用**。这是 Gemini Pro 内置标定的限制，跟 USB 速率无关：
+
+| Color Profile | HW D2C | SW D2C |
+|---|---|---|
+| 1920×1080 @30 (任格式) | ❌ | ❌ |
+| 1280×720  @30 (任格式) | ❌ | ❌ |
+| **640×480 @30** (MJPG/RGB/BGRA) | ✓ (10 depth profile) | ✓ (20 depth profile) |
+
+### 选型规则
+
+- **绝大多数下游算法（人脸 / 姿态 / 点云）→ 走 SDK 路径 + 硬件 D2C**：免标定、跨重启稳定、时间戳同步、aligned 准确率高。代价是 color 锁 640×480 + fps ~25。
+- **需要高分辨率 color（1280+ 用于人脸识别细节、屏幕显示） → 走 cv2 UVC 路径**：用 `open_color()` 默认 1280×720 @30 + chessboard 标定 + `align_depth_to_color()`。
+
+### 两条路径互斥（USB 设备只能被一边持有）
+
+OrbbecSDK 通过 libusb 直接抢占 0x0511 USB 设备，不走 uvcvideo 内核驱动。一旦 SDK 在某进程里 `obg_open(streams 含 color)`，**uvcvideo 就丢失这个设备**，`/dev/video0` 节点消失，cv2 / V4L2 用户态再也打不开。
+
+- **同进程内绝对不要混用** `open_color()`（cv2）和 `streams=["color"]`（SDK）。
+- **跨进程切换路径时**：先关掉所有占用 SDK color 的进程，然后跑 `sudo bash thirdparty/OrbbecSDK_v1/python/uvc_rebind.sh` 让 uvcvideo 重新创建 `/dev/video0`，再启动 cv2 路径。该脚本是 `unbind`+`bind` `uvcvideo`，幂等可重复。
+- 如果 rebind 不奏效（极少数固件状态卡死），物理拔插 USB 等 10s 即可恢复。
+
+## 各流默认行为（实测）
+
+| 流 | 默认分辨率 | 帧率 | 数据类型 | 说明 |
+|---|---|---|---|---|
+| Depth | 640×400 | 30 fps | Y16, `scale=1.0 mm/unit` | 像素值直接是毫米；0=无效（出范围/反光/遮挡） |
+| IR    | 640×400 | 30 fps | Y16 (10-bit, max≈1023) | 与 Depth 共享传感器，可同 pipeline 启用 |
+| Color | 1280×720 | **30 fps**（前提是 lock_fps=True，见下） | BGR uint8 | 默认走 cv2 UVC `/dev/video0`；走 SDK 见上节 |
+
+- 工作距离：**~0.2 m – 3+ m**（取决于场景反光率，远端 >2 m 噪声明显）
+- Depth+IR 同 pipeline 工作正常（实测 60 framesets 全部 both-present，时间戳 skew ~36 ms 即一帧周期内）
+- Color 与 Depth 不硬件同步，时间戳基底统一为 CLOCK_REALTIME（epoch us）便于做 skew 分析；典型 skew 200–400 ms
+- IR 是 16-bit raw，显示前先做百分位拉伸：`((ir - p1) / (p99 - p1)).clip(0,1) * 255`，不要直接 `>>8`
+- 设备**不支持 frame sync**，启动 pipeline 时打 `Current device does not support frame sync!` warning，可忽略
+- stop 流时打的 `usb_request_cancel returned error` / `OpenNI Depth stream stop failed` 是 OpenNI 异步事务回收，不影响已收到的帧
+
+### Color 帧率两个必踩坑（否则只会跑 14–18 fps）
+
+1. **`V4L2_CID_EXPOSURE_AUTO_PRIORITY`**：UVC 默认值是 1，意思是允许自动曝光在低光时把 fps 折半（30→15→10）以延长曝光。`open_color(lock_fps=True)`（默认）会在 `cv2.VideoCapture` 之前先 ioctl 把它设成 0，强制锁 fps。如果环境光极低且追求亮度，可以传 `lock_fps=False` 换回去。
+2. **不要设 `cv2.CAP_PROP_BUFFERSIZE=1`**：cv2 V4L2 backend 在 BUFFERSIZE=1 下会只 enqueue 1 个 mmap buffer，每次 dequeue→requeue 之间硬件已经丢一帧，30 fps 直接掉到 17 fps。保留默认（4）即可，latency 已经够低。
+
+### 支持的 Color 模式（`enum_color_modes.py` 实测）
+
+```
+MJPG: 640×480@60  1280×720@30  1280×960@30  1920×1080@30  2560×1440@30  2592×1944@25
+YUYV: 640×480@30  其它分辨率被 USB2.0 带宽锁到 5 fps
+```
+新建议默认：MJPG 1280×720 @30 fps。
+
+### USB 稳定性
+
+OpenNI 老固件在反复 `obg_open` / `obg_close` 后偶尔会让 `2bc5:0614` 从 USB 总线掉线（lsusb 只剩 `2bc5:0511`）。出现就**物理拔插**一下 USB 头，~10 秒内恢复。生产代码避免高频开关，open 一次复用。
+
+## 接入代码时遵守
+
+### 仅深度
+```python
+from orbbec_gemini import OrbbecGemini
+with OrbbecGemini(streams=["depth"]) as cam:
+    f = cam.read_depth(timeout_ms=200)
+    if f: mm = f.as_mm()       # float32 (H,W), 0=无效
+```
+
+### Depth + IR（同步 frameset，做点云/IR 增强等）
+```python
+with OrbbecGemini(streams=["depth", "ir"]) as cam:
+    fs = cam.read_frames(timeout_ms=200)   # FrameSet(depth, ir)
+    if fs and fs.depth and fs.ir:
+        ...  # 时间戳 skew < 一帧周期
+```
+
+### **首选：SDK 路径 RGB-D（硬件 D2C，免标定）**
+```python
+cam = OrbbecGemini(streams=["depth", "color"])
+info = cam.open(
+    color_width=640, color_height=480, color_fps=30,   # D2C 锁此档
+    color_format="mjpg",                               # 也可 "rgb" / "bgra"
+    d2c="hw",                                          # "off" / "hw" / "sw"
+)
+assert info.d2c_mode == "hw"
+rgbd = cam.read_rgbd_sdk(timeout_ms=600)
+if rgbd:
+    color = rgbd.color.data                # BGR uint8 (480, 640, 3)
+    aligned = rgbd.aligned_depth           # uint16 (480, 640)，0=无效
+    aligned_mm = rgbd.aligned_depth_mm()   # float32 mm
+cam.close()
+```
+
+### SDK 路径只取 color
+```python
+cam = OrbbecGemini(streams=["color"])
+cam.open(color_width=640, color_height=480, color_format="mjpg", d2c="off")
+cf = cam.read_color_sdk(timeout_ms=300)    # ColorFrame.data BGR uint8
+cam.close()
+```
+
+### cv2 UVC 路径 RGB 单流（需要 1280+ 分辨率时）
+> 前提：`/dev/video0` 没被 SDK 抢走。如果之前用过 SDK color，先 `sudo bash thirdparty/OrbbecSDK_v1/python/uvc_rebind.sh`。
+```python
+cam = OrbbecGemini()                                      # 不调 cam.open()
+cam.open_color("/dev/video0", 1280, 720, 30,
+               fourcc="MJPG", lock_fps=True)              # 30fps 默认
+cf = cam.read_color()                                     # ColorFrame.data BGR uint8
+cam.close_color()
+```
+
+### cv2 UVC 路径 RGB-D（高分辨率 color + 自标定 reproject）
+```python
+cam = OrbbecGemini(streams=["depth"])
+cam.open()
+cam.open_color("/dev/video0", 640, 480, 30)
+cam.load_calibration("calib_rgbd.npz")     # calibrate_rgbd.py 产出
+rgbd = cam.read_rgbd(timeout_ms=300)
+if rgbd:
+    color = rgbd.color.data                # BGR uint8 (Hc, Wc, 3)
+    aligned = rgbd.aligned_depth           # uint16 (Hc, Wc)，0=无效
+    aligned_mm = rgbd.aligned_depth_mm()   # float32 mm
+```
+
+### 标定（首次部署或硬件被搬动后必做）
+```bash
+# 真实标定：拿一张 9x6 内角点的棋盘格（25mm 方格），在两相机前 ~0.5-1.5m 距离慢慢晃动
+.venv/bin/python thirdparty/OrbbecSDK_v1/python/calibrate_rgbd.py chessboard \
+    --board-cols 9 --board-rows 6 --square-size-mm 25 --pairs 25 \
+    --color-width 640 --color-height 480 --out calib_rgbd.npz
+
+# 仅验证对齐 pipeline（精度 5–20mm@1m，不要上生产）：
+.venv/bin/python thirdparty/OrbbecSDK_v1/python/calibrate_rgbd.py fake \
+    --out calib_rgbd_fake.npz
+```
+
+### 其它必须遵守
+- **不要**直接 `import pyorbbecsdk`；不存在。
+- **不要**用 `cv2.VideoCapture` 抢深度；它只能拿到 RGB（PID 0x0511 的 UVC）。
+- **不要**断言 "RGB 不在 SDK 视野内" —— SDK 实际能列到 21 个 color profile（`probe_d2c` 实测）。但 D2C 仅 color=640×480 可用，要高分辨率 color 仍只能走 cv2 UVC + `align_depth_to_color()`。
+- **不要**在同一进程里混用 `open_color()`（cv2）和 `streams=["color"]`（SDK）；两者抢同一 USB 设备。
+- **不要**在多个进程里同时开 pipeline；shim 内部有全局互斥但跨进程会让第二个 `obg_open` 拿不到设备。
+- 跨进程从 SDK color 切回 cv2 UVC 必须 `sudo bash uvc_rebind.sh`，否则 `/dev/video0` 不会回来。
+- 标定 npz 中 `T_d2c` 的单位是 **毫米**，与 depth 像素值乘 `scale_mm_per_unit` 后保持一致。
+
+## 自检（确认链路健康，可直接照抄）
+
+```bash
+lsusb -d 2bc5:                                       # 期望: 0511 + 0614 各一行
+ls -l /dev/gemini /dev/gemini_rgb /dev/video0        # 期望: 软链与 v4l2 节点存在
+cat /sys/module/usbcore/parameters/usbfs_memory_mb   # 期望: 128
+thirdparty/OrbbecSDK_v1/probe/probe_orbbec_depth     # C++ 60 帧 + 统计
+.venv/bin/python thirdparty/OrbbecSDK_v1/python/probe_depth.py  # depth via Python
+.venv/bin/python thirdparty/OrbbecSDK_v1/python/probe_ir.py     # depth+ir 同步 60 framesets
+.venv/bin/python thirdparty/OrbbecSDK_v1/python/probe_color.py  # cv2 UVC 90 帧 30 fps
+# 上面 4 条末行都应该是 "OK: ... reachable from Python."
+.venv/bin/python thirdparty/OrbbecSDK_v1/python/probe_rgbd.py \
+    --calib thirdparty/OrbbecSDK_v1/python/calib_rgbd_fake.npz   # cv2 UVC + 自标 reproject
+
+# === SDK D2C 路径（跑这个之后 /dev/video0 会暂时消失）===
+.venv/bin/python thirdparty/OrbbecSDK_v1/python/probe_rgbd_sdk.py    # 30 帧硬件 D2C，~25 fps
+sudo bash thirdparty/OrbbecSDK_v1/python/uvc_rebind.sh               # 让 /dev/video0 回来给 cv2 用
+
+thirdparty/OrbbecSDK_v1/probe/probe_d2c                          # SDK 能否枚举 color + D2C 矩阵
+lsusb -tv | grep -A2 2bc5                                        # 看当前 USB 速率（480M=USB2, 5000M=USB3）
+```
+
+## 范围说明
+
+本规则**仅描述当前这台开发机**接的这一颗 Gemini Pro（SV1301S_U3）。涉及上游可合并的代码改动时，Orbbec 适配应做成可探测/可选分支，不要把 PID 0x0614 / `libobgemini.so` 当作所有部署目标都成立的前提。

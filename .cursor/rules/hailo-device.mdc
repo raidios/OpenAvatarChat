@@ -1,0 +1,68 @@
+---
+description: 当前部署平台（Raspberry Pi 5 + AI HAT+ 2 / Hailo-10H）的可用硬件、软件栈、设备路径与接入约束
+alwaysApply: true
+---
+
+# Hailo NPU 平台事实（部署在本机：Raspberry Pi 5 + Ubuntu 24.04）
+
+本仓库当前在如下平台上运行/调试。涉及推理加速、模型加载、硬件能力探测时，按下列事实推理；不要回退到 Hailo-8 时代的 `/dev/hailo0` 或 `hailo_pci` 旧路径。
+
+## 硬件 / 系统
+
+- 设备：Raspberry Pi 5 Model B Rev 1.1 + Raspberry Pi AI HAT+ 2（板载 Hailo-10H NPU）
+- OS：Ubuntu 24.04.4 LTS（aarch64），内核 `6.8.0-1051-raspi`
+- PCIe：`0000:01:00.0  1E60:45C4  Hailo-10H`
+
+## 系统层 Hailo 软件栈（所有版本统一 5.3.0）
+
+`.deb` 已安装（来自 Hailo Developer Zone）：
+
+- `hailort` — `libhailort` + `/usr/bin/hailortcli` + 固件
+- `hailort-pcie-driver` — DKMS 内核模块 `hailo1x_pci`（**不是** `hailo_pci`）
+- `hailo-accelerator-integration-tool` — `/usr/bin/hailo-accelerator-integration-tool`（温控/集成调试）
+- `hailo-gen-ai-model-zoo` — Hailo LLM 模型包
+
+设备节点 / 驱动：
+
+- `/dev/h1x-0`（**不是** `/dev/hailo0`，权限 `crw-rw-rw-`，普通用户可直接访问）
+- udev 规则：`/lib/udev/rules.d/51-hailo-pcie-udev.rules`
+- 固件：5.3.0 (release, app)
+
+GStreamer 插件已注册（来自 TAPPAS）：`hailonet`、`synchailonet`、`hailodevicestats`。
+
+## 项目 venv（Python 绑定）
+
+- venv 路径：`/home/cyk/codes/OpenAvatarChat/.venv`
+- 解释器：**Python 3.11.15**（uv 管理，`.venv/bin/python`）
+- 已装 wheel（与 runtime 同版本 5.3.0）：
+  - `hailort==5.3.0`（cp311-linux_aarch64）→ `import hailo_platform; from hailo_platform import VDevice` 可用
+  - `hailo-tappas-core-python-binding==5.3.0`
+
+新增依赖时**始终在 venv 内**操作，不要污染系统 Python：
+
+```bash
+uv pip install <pkg>          # 在仓库根目录运行，自动作用于 .venv
+.venv/bin/python -m pip list  # 检查
+```
+
+## 自检命令（确认设备健康，可直接照抄）
+
+```bash
+hailortcli scan                       # 期望: pci/0000:01:00.0
+hailortcli fw-control identify        # 期望: HAILO10H, Firmware 5.3.0
+ls -l /dev/h1x-0                      # 期望: crw-rw-rw-
+lsmod | grep hailo1x_pci              # 期望: 已加载
+.venv/bin/python -c 'from hailo_platform import VDevice; print("ok")'
+```
+
+## 接入约束（写代码 / 选模型时务必遵守）
+
+- **HEF 必须是 Hailo-10H 编译产物**。Hailo-8 / Hailo-8L / Hailo-15 的 HEF 不通用，加载会报架构不匹配。
+- Python 中通过 `hailo_platform.VDevice()` 获取设备，driver 自动绑到 `/dev/h1x-0`，**不要硬编码 `/dev/hailo0`**。
+- `hailortcli` 在 `/usr/bin/hailortcli`（非 `/usr/local/bin`）；`subprocess` 调用建议依赖 PATH。
+- `hailort` / driver / Python wheel **三者版本必须一致**（当前 5.3.0）；任何一个升级都要同步另外两个，否则 ABI 不兼容。
+- 容器化部署时需把 `/dev/h1x-0` 透传进容器，并保证容器内 HailoRT 与宿主机 driver 版本一致。
+
+## 范围说明
+
+本规则**仅描述当前这台开发机**的真实硬件与软件状态，不是上游 OpenAvatarChat 项目的通用约定。涉及上游可合并的代码改动时，Hailo 适配应做成可探测/可选分支，不要把 `/dev/h1x-0` 或 cp311 venv 当作所有部署目标都成立的前提。

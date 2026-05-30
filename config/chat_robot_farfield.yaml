@@ -1,0 +1,94 @@
+default:
+  logger:
+    log_level: "INFO"
+  service:
+    host: "0.0.0.0"
+    port: 8282
+  chat_engine:
+    model_root: "models"
+    concurrent_limit: 1
+    handler_search_path:
+      - "src/handlers"
+    handler_configs:
+      Ros2Client:
+        module: client/ros2_client/client_handler_ros2
+        audio_clean_topic: "/audio/clean"
+        wakeword_topic: "/audio/wakeword"
+        vad_topic: "/audio/vad"
+        sample_rate: 16000
+        chunk_samples: 512
+        auto_start_session: true
+        tts_playback: true
+      WakeWord:
+        module: wakeword/sherpa_kws/wakeword_handler_sherpa
+        # Far-field client owns the M260C audio + DOA, so KWS runs on
+        # the client and is forwarded over WS as a wake_word control
+        # message. The server-side handler still owns session state +
+        # wake-reply TTS + farewell, but no longer runs KWS locally.
+        external_wake_only: true
+        model_dir: "models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20"
+        keywords_file: "config/keywords.txt"
+        keywords_score: 1.5
+        keywords_threshold: 0.15
+        num_threads: 1
+        wake_reply_text: "你好，有什么可以帮你的？"
+        farewell_reply_text: "好的，再见！"
+        farewell_keywords:
+          - "再见"
+          - "拜拜"
+          - "结束"
+          - "退下"
+        session_timeout: 15.0
+        tts_model_name: "qwen3-tts-flash"
+        tts_voice: "Cherry"
+        tts_sample_rate: 24000
+      SileroVad:
+        module: vad/silerovad/vad_handler_silero
+        speaking_threshold: 0.25
+        start_delay: 2048
+        end_delay: 8000
+        buffer_look_back: 5000
+        speech_padding: 512
+      QwenASR:
+        module: asr/qwen_asr/asr_handler_qwen
+        model_name: "fun-asr-realtime"
+        language_hints:
+          - "zh"
+          - "en"
+      QwenTTS:
+        module: tts/qwen_tts/tts_handler_qwen
+        model_name: "qwen3-tts-flash"
+        voice: "Cherry"
+        sample_rate: 24000
+      LLMOpenAICompatible:
+        module: llm/openai_compatible/llm_handler_openai_compatible
+        model_name: "qwen3.5-flash"
+        enable_video_input: true
+        history_length: 20
+        system_prompt: "config/system_prompt.txt"
+        api_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+    # Far-field DSP pipeline knobs (consumed by audio_frontend_node, not by the
+    # OpenAvatarChat handler chain). These live here so a single yaml owns the
+    # whole robot stack.
+    audio_frontend:
+      mic_array:
+        n_mics: 6
+        n_ref_channels: 2
+        ring_radius_mm: 33
+      dns:
+        backend: auto       # auto | cpu | hailo
+        cpu_model: deepfilternet
+        hailo_model: dtln
+      pose_detector:
+        backend: auto
+        cpu_model: yolov8n_pose
+        hailo_model: yolo11n_pose
+      reid:
+        backend: auto
+        cpu_model: osnet_x0_25
+        hailo_model: osnet_x0_25
+        gallery_threshold: 0.70
+        enroll_doa_window_deg: 20
+      mouth_estimator:
+        shoulder_to_mouth_offset_m: 0.22

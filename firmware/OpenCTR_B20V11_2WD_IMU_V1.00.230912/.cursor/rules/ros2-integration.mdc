@@ -1,0 +1,66 @@
+---
+description: 树莓派 ROS2 上位机集成指南：架构方案、接口适配、注意事项
+alwaysApply: true
+---
+
+# ROS2 上位机集成指南
+
+## 当前状态评估
+
+### 已有基础
+- `Driver/ax_uart_pi.c` + `Robot/robot.c` 已实现树莓派通信框架 (X-Protocol over USART2)
+- `robot.c` 中 `ROBOT_SendDataToPi()` 每 20ms 上报: IMU 6轴 + 里程计速度 + 电池电压
+- `robot.c` 中 `ROBOT_IMUHandle()` 已做 IMU→ROS 坐标系变换
+- `ax_uart_pi.c` 接收 ROS 速度指令 (vx/vy/vw) 并写入目标速度
+
+### 需要修改
+1. `robot.c` / `ax_uart_pi.c` **当前未参与编译** (不在 Keil 工程中)
+2. `ax_uart_pi.c` 和 `ax_uart2.c` 共用 USART2 + IRQ，**会冲突**
+3. 当前 `main.c` 使用的是 `ax_robot.c` 体系，非 `robot.c` 体系
+
+## 推荐集成架构
+
+```
+[树莓派 ROS2]  <--UART-->  [STM32 OpenCTR]
+  ros2_bridge_node            X-Protocol 固件
+  (Python/C++)
+```
+
+### 方案 A: 使用空闲 UART (推荐)
+- 将 Pi 通信改到 **UART4 (PC10/PC11)** 或 **UART5 (PC12/PD2)**
+- 保留蓝牙 USART2 功能不变，Pi 通信完全独立
+- 需复制 `ax_uart_pi.c` 的协议逻辑到 `ax_uart4.c`/`ax_uart5.c`
+
+### 方案 B: 替换蓝牙串口
+- 在 Keil 中用 `ax_uart_pi.c` 替换 `ax_uart2.c`
+- Pi 通过 USART2 (PA2/PA3) 连接
+- 缺点: 失去蓝牙 APP 控制能力
+
+## ROS2 端桥接节点设计
+
+树莓派上运行自定义 ROS2 节点，负责 X-Protocol ↔ ROS2 Topic 转换:
+
+### 订阅 (接收 ROS2 指令 → 发送到 STM32)
+- `/cmd_vel` (geometry_msgs/Twist) → ID `0x50` 速度帧
+  - linear.x × 1000 → int16 vx (mm/s)
+  - linear.y × 1000 → int16 vy (对差速车恒为0)
+  - angular.z × 1000 → int16 vw (mrad/s)
+
+### 发布 (接收 STM32 数据 → 发布 ROS2)
+- ID `0x10` 综合数据帧 → 拆分发布:
+  - `/imu/data_raw` (sensor_msgs/Imu): 加速度 + 角速度
+  - `/odom` (nav_msgs/Odometry): 里程计速度
+  - `/battery_state` (sensor_msgs/BatteryState): 电池电压
+
+## 新增控制模式
+在 `ax_robot.h` 中添加:
+```c
+#define CTL_ROS    0x04    // ROS2 上位机控制
+```
+在 `Robot_Task` 中增加 `CTL_ROS` 分支，处理来自 Pi 的速度指令。
+
+## 注意事项
+- micro-ROS 直接在 STM32F103 上运行**不现实** (RAM/Flash 严重不足)
+- 推荐通信波特率: 115200 或 500000 (取决于 Pi UART 能力)
+- 添加通信超时保护：若超过 500ms 未收到速度指令，自动停车
+- 数据上报频率建议保持 50Hz (与控制循环同步)

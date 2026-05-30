@@ -112,7 +112,8 @@ class HandlerQwenASR(HandlerBase, ABC):
             return
 
         if not context.output_audios:
-            if context.shared_states is not None:
+            if context.shared_states is not None and context.shared_states.wake_session_active:
+                logger.info("ASR: empty audio buffer, re-enabling VAD")
                 context.shared_states.enable_vad = True
             return
 
@@ -168,13 +169,13 @@ class HandlerQwenASR(HandlerBase, ABC):
             done_event.wait(timeout=30)
         except Exception as e:
             logger.opt(exception=True).error(f"QwenASR recognition error: {e}")
-            if context.shared_states is not None:
+            if context.shared_states is not None and context.shared_states.wake_session_active:
                 context.shared_states.enable_vad = True
             return
 
         if error_holder[0]:
             logger.error(f"QwenASR callback error: {error_holder[0]}")
-            if context.shared_states is not None:
+            if context.shared_states is not None and context.shared_states.wake_session_active:
                 context.shared_states.enable_vad = True
             return
 
@@ -183,8 +184,16 @@ class HandlerQwenASR(HandlerBase, ABC):
 
         if not output_text:
             if context.shared_states is not None:
-                context.shared_states.enable_vad = True
+                if context.shared_states.wake_session_active:
+                    context.shared_states.enable_vad = True
             return
+
+        if context.shared_states is not None and context.shared_states.wake_session_active:
+            farewell_keywords = context.shared_states.farewell_keywords or []
+            if any(kw in output_text for kw in farewell_keywords):
+                logger.info(f"Farewell keyword detected in: {output_text}")
+                context.shared_states.farewell_pending = True
+                return
 
         output = DataBundle(output_definition)
         output.set_main_data(output_text)
