@@ -56,13 +56,24 @@ OpenAvatarChat 服务端**只加载 `config/chat_rpi_voice.yaml` 的 `handler_co
 
 ## 4. 建好但**当前部署链路用不到**（dormant）
 
-- `audio_frontend/dsp/dns_cpu.py`（DeepFilterNet CPU）、`audio_frontend/backends/denoiser.py`（Hailo DTLN）：**DNS 整级默认关闭**（DTLN v7 量化 buzz），需 `--farfield-dns-on` 才启用。详见 [TODO.md](TODO.md)。
+- `audio_frontend/dsp/dns_cpu.py`（DeepFilterNet CPU）、`audio_frontend/backends/denoiser.py`（Hailo DTLN）：**DNS 整级默认关闭**，需 `--farfield-dns-on` 才启用。Hailo DTLN HEF **已编好并在车上跑过**（`models/hailo/`，用户确认），因 DTLN v7 量化 buzz 默认关。详见 [TODO.md](TODO.md)。
 - `audio_frontend/vision/*`（yolo_pose / reid / mouth_estimator / gallery）：stage2 感知，只在 `make test-stage2-smoke` 和 `tools/perception_quicklook.py` 跑过，**未接入部署中的客户端**。
 - `ros2_ws/`（audio_frontend / camera / perception 三个节点）+ `src/handlers/client/ros2_client/`：**完全未部署**（无 systemd 单元，config 也没挂 ros2_client）。
 - `tools/*`（标定/探针/诊断）、`tests/*`：手动运行，非自启链路。
 - 固件 `Project/` 编译产物：已 gitignore，源码用 Keil AC5 编译（GB2312 编码）。
 
-## 5. 仓库/远端状态
+## 5. 实测确认状态（用户 2026-05-30）
+
+四大能力**都已实现并跑通**，但各带已知问题（详细诊断计划见 [EVAL_PLAN.md](EVAL_PLAN.md)，待办见 [TODO.md](TODO.md)）：
+
+| 能力 | 状态 | 已知问题 |
+|---|---|---|
+| 语音对话闭环 | ✅ 通 | **接麦阵后 VAD 有时唤不起来**；换麦阵前良好。疑 DSP 输出电平偏低 / 或 VAD 参数需调，未排查 |
+| 唤醒转向 | ✅ 正常 | — |
+| ArUco 跟踪 | ✅ 方向/角度对、能驱动底盘 | **动作不连贯、明显卡断迟滞**；疑 marker 检测不连续/频繁丢失，需 profile 诊断 |
+| 表情 + 情绪动作 | ✅ 渲染/触发正常 | **情绪 tag 与回答内容相关性偏低**；疑 prompt 与模型契合度，未细查 |
+
+## 6. 仓库/远端状态
 
 - `origin` = `raidios/OpenAvatarChat`（fork，可推）；`upstream` = `HumanAIGC-Engineering/OpenAvatarChat`（只读参考）。`main` 跟 `upstream/main`；`smart-car` 跟 `origin/smart-car`。fork 点 `93c7c4b`(#209)。
 - **密钥审计（2026-05-30）**：无泄漏。`.env` 未被跟踪且在 `.gitignore`；车端 tracked 代码无硬编码密钥（key 走 `os.getenv("DASHSCOPE_API_KEY")`）。

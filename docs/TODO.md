@@ -4,14 +4,22 @@
 > 状态标记：🔴 卡住/阻塞　🟡 进行中或部分可用　🟢 已有可用兜底（优化项）　⚪ 想法/备选。
 > 与运行现状对照见 [PROJECT_STATE.md](PROJECT_STATE.md)。最后更新：2026-05-30。
 
-## 1. 🔴 DNS 降噪（DTLN → Hailo-10H）—— 最大的一块未竟工作
+## 0. 🟡 当前已知问题（用户实测确认，优先诊断 —— 下一步重点）
+
+四大能力都跑通了，但带三个待诊断问题。**下个 session 方向 = 先测全现状、建基线**，诊断方法见 [EVAL_PLAN.md](EVAL_PLAN.md)。
+
+- **0.1 VAD 唤醒困难（接麦阵后）**🟡：换麦阵前对话良好，接 M260C 远场链路后 VAD 有时唤不起来。两个假设：(a) 麦阵 DSP（AEC+MVDR）输出电平偏低 → Silero `speaking_threshold=0.25` 达不到；(b) 麦阵实现/链路问题。**未排查**。先量 DSP 输出 RMS/dBFS、看 VAD 概率分布、A/B 单麦 vs 麦阵。相关：`vad/silerovad`（config 参数）、`farfield_audio_source.py`、`audio_frontend/dsp/`(末级增益)。
+- **0.2 ArUco 跟踪卡顿/迟滞**🟡：方向角度对、能驱动底盘，但动作不连贯、明显卡断。疑 marker 检测不连续/频繁丢失。**强假设**：检测丢失 → 客户端停发 `0x50 cmd_vel` → 固件 300ms 超时进 IDLE 刹车 → 卡顿。需 profile：检测命中率/连续丢失长度/每帧检测耗时/相机帧率/控制指令间隔。相关：`apriltag_tracker.py`、`tracking_controller.py`、相机选择（auto）。
+- **0.3 情绪 tag 与回答相关性低**🟡：表情/动作触发正常，但情绪标签和回答内容语义相关性不高。疑 prompt 与模型契合度。看 `config/system_prompt.txt` 对情绪 tag 的约束、`action_tags` 白名单一致性，A/B 调 prompt。
+
+## 1. 🟡 DNS 降噪（DTLN → Hailo-10H）—— HEF 已成、因 buzz 默认关
 
 **现状**：远场链路里 DNS 整级**默认旁路**（`client/main.py` 默认 `--farfield-dns-passthrough`）。原因：DTLN v7 HEF 有间歇性量化 buzz，比它带来的 +10dB 回声残余抑制更扰人；AEC+MVDR 已给 -7dB 残余，日常室内够用。
 
 **踩坑史 & 进度**（详见 [DTLN_HEF_HANDOFF.md](DTLN_HEF_HANDOFF.md) + [DTLN_HEF_COMPILATION.md](DTLN_HEF_COMPILATION.md)）：
 - 在 WSL（x86 + RTX2060 + DFC 5.3）上编 DTLN HEF，反复撞 DFC 的 LSTM/Loop/Split parser bug；老 keras2onnx 导出的 ONNX 全坏。
-- 最后的 in-progress 方案：**StatelessLSTM**（把一步 LSTM 拆成纯 MatMul+Slice+Sigmoid+Tanh，绕开原生 LSTM/Loop/Split op），脚本 `tools/rebuild_dtln_onnx.py` / `tools/dtln_build_calib.py`。是否最终产出 v4 HEF 并验收，**待确认**。
-- RPi5 端 wrapper `audio_frontend/backends/denoiser.py:HailoDenoiser` 已按双-HEF v7 协议写好，实测跨帧 pipelining ~7.1ms/帧（< 8ms 预算）。
+- 最后的 in-progress 方案：**StatelessLSTM**（把一步 LSTM 拆成纯 MatMul+Slice+Sigmoid+Tanh，绕开原生 LSTM/Loop/Split op），脚本 `tools/rebuild_dtln_onnx.py` / `tools/dtln_build_calib.py`。
+- **HEF 最终编出来了并在车上跑过**（用户确认，`models/hailo/`）；RPi5 端 wrapper `audio_frontend/backends/denoiser.py:HailoDenoiser` 按双-HEF v7 协议写好，实测跨帧 pipelining ~7.1ms/帧（< 8ms 预算）。**唯一拦路的是量化 buzz**，不是编译。
 
 **下一步选项**：
 1. 修 DTLN 量化 buzz：扩校准集 / 提 `precision_mode` / 真实语音校准（`make test-stage1 BACKEND=hailo` 验收，目标 DNSMOS 不低于 CPU -0.1、RTF<0.3）。

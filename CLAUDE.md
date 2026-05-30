@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A fork of upstream **OpenAvatarChat** (a general conversational digital-human system) adapted to run a **physical smart car / robot**: a Raspberry Pi 5 "upper computer" running the voice+vision dialog stack, driving an STM32F103 "lower computer" (chassis/IMU/motors) over a serial protocol. The robot-specific code (`client/`, `audio_frontend/`, `ros2_ws/`, `tools/`, `firmware/`, `expression_player/`, robot configs) lives only on this fork; the dialog **server** is largely upstream.
 
-> **Read first each session:** `docs/PROJECT_STATE.md` (what actually runs on the car — startup → which handlers/config are live vs. which code is built-but-dormant) and `docs/TODO.md` (unfinished / blocked / Plan-B work to review when picking next direction). Keep both updated as the deployment changes.
+> **Read first each session:** `docs/PROJECT_STATE.md` (what actually runs on the car — startup → which handlers/config are live vs. built-but-dormant, plus user-confirmed runtime status), `docs/TODO.md` (unfinished / blocked / Plan-B work + current known issues), and `docs/EVAL_PLAN.md` (test & baseline plan for verifying real runtime capability). Keep them updated as the deployment changes.
 
 ## Branch model — do not pollute upstream
 
