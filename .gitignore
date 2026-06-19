@@ -39,6 +39,15 @@ uv.lock
 logs/
 .lock
 
+# Pi-only hardware/vendor/runtime artifacts.
+thirdparty/
+tests/data/
+tests/metrics/
+tests/results/
+Log/
+hailort.log
+.hailo_accelerator_integration_tool.log
+
 # Teach / motion artifacts: 录制的 clip 是 per-machine 用户数据；calib 结果
 # 也是 per-camera 标定值，不进版本控制。
 # data/teach_bindings.json 保留在仓库里作为缺省值；用户可以现场覆盖。
