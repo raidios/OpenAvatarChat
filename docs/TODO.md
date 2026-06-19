@@ -13,12 +13,12 @@
   - 新线索（更可能的间歇性根因）：**playback↔mic 门控时序**。日志见 `[mic] mute=True is_playing=True mute_until_in=-1393.29s`（疑 stale/异常时间戳）+ 服务端 `Wake reply did not receive playback_complete in time; enabling VAD (server failsafe)`。怀疑唤醒应答/TTS 播放与 VAD 重新使能的握手在某些情况下错位 → 偶发吞掉语音。**需抓一次失败实例**对比成功/失败时的 mute/playback 状态。
   - TODO：在下一次车上复现时同时抓客户端与服务端状态时间线：客户端 `is_playing` / `mute_until` / `mic_should_mute` / `playback_done_event` / `playback_complete` 发送时间；服务端 `wake_session_active` / `enable_vad` / `playback_complete` 接收时间 / wake failsafe 触发时间。目标是确认失败发生在客户端未发、服务端未收、还是 mute/VAD 状态时序错位。
   - 相关：`client/ws_audio_client.py`（mute/playback）、`wakeword/sherpa_kws/...`（wake reply + playback_complete 握手）、`vad/silerovad`、`client_handler_ws.py`。
-- **0.2 ArUco/marker board 跟随卡顿/迟滞**🟡 已有低风险缓解，待更长实机回归。
+- **0.2 ArUco/marker board 跟随卡顿/迟滞**✅ 已关闭（2026-06-19 用户确认）。
   - 2026-06-19 实机结论：单 tag/多 tag 直接选最近目标会在 3x3 marker 板上频繁换目标；暗环境下自动曝光/动态降帧导致运动模糊，检测掉点明显；固定曝光测试后检测稳定性显著改善，但固定曝光不适合对话视觉长期使用。
   - 已实现：默认把 ID 0-8 的 3x3 marker board 聚合成单一目标（45mm tag、约 7mm gap），要求至少 2 个 tag 才刷新 board pose；短暂丢失时先限速预测，再进入非驱动 hold；目标 pose 非有限/距离越界会立即停车；控制器线速度/角速度限幅，并降低角速度 D 项、加角速度变化率限制，避免 `vw` 数值尖峰。
   - 已实现：默认服务模板改走 `--camera-mode rgbd-sdk --camera orbbec`，从 Orbbec SDK 同一 pipeline 读取 color+depth，并为后续检测框取 aligned depth 预留 `get_rgbd_frame()`。UVC 启动参数 `--camera-fps`、`--camera-auto-exposure auto|manual`、`--camera-disable-dynamic-framerate`、`--camera-exposure-time`、`--camera-gain` 仅作为 `--camera-mode color` 的兜底/调试路径。
-  - TODO：更长时间实机回归：不同光照下记录检测命中率、连续丢失长度、实际 FPS、`held/predicted` 比例、`cmd_vel` 间隔和 MCU 仲裁源；若仍有抖动，再考虑降低 `kp_angle` 或把远场 DSP 子进程化以减少视觉线程饥饿。
-- **0.3 情绪 tag 与回答相关性低**🟡：表情/动作触发正常，但情绪标签和回答内容语义相关性不高。疑 prompt 与模型契合度。看 `config/system_prompt.txt` 对情绪 tag 的约束、`action_tags` 白名单一致性，A/B 调 prompt。
+  - 关闭依据：RGB-D SDK 模式 + 3x3 marker board 聚合 + 2 tag 刷新 + 短时预测 + 控制器限速/角速度变化率限制后，短电机测试未再出现危险前冲；第二轮 20s 窗口未见 `Tag lost -> IDLE` 抖动，用户认可 marker 追踪问题可关闭。
+- **0.3 情绪 tag 与回答相关性低**🟡：表情/动作触发正常，但情绪标签和回答内容语义相关性不高。疑 prompt 与 VLM/LLM 输出策略契合度。当前链路里 `config/system_prompt.txt` 要求模型在回答中直接插入 `[happy]`/`[shy]`/`[apologize]`/`[scared]`；`data/teach_bindings.json` 与 `client/action_dispatcher.py` 也只认这 4 个。该问题可先脱离小车做本地/WSL 半在线闭环：固定 system prompt + 多轮文本/可选图片样本 → 调 DashScope compatible LLM/VLM → 解析 action tags → 与人工期望标签对比，A/B prompt 后再决定是否部署到车上。
 - **0.4 🔴 安全：DashScope api_key 在 journald 明文留存**：服务端 `chat_engine/core/handler_manager.py:register_handler` 在 INFO 日志里**打印了完整 handler config，包含 `api_key='sk-…'`**（QwenASR/LLM 从 `.env` 注入的 key 被原样打到 journal）。key 本身**不在 git**（`.env` 已忽略），但 journald 明文可读、且会随日志外泄。**处理**：① 轮换该 DashScope key（已在日志/调试过程中暴露）；② `register_handler` 日志脱敏已在本地实现并加 unittest（`tests/unittest/test_handler_manager_redaction.py`），车端待部署并重启服务后生效。
 
 ## 1. 🟡 DNS 降噪（DTLN → Hailo-10H）—— HEF 已成、因 buzz 默认关
