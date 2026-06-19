@@ -52,7 +52,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--duration", type=float, default=0.0,
                         help="Stop after N seconds; 0 means run until Ctrl+C")
     parser.add_argument("--smoothing-alpha", type=float, default=0.35)
-    parser.add_argument("--lost-timeout", type=float, default=0.35)
+    parser.add_argument("--lost-timeout", type=float, default=0.8)
+    parser.add_argument("--min-visible-tags", type=int, default=3,
+                        help="Minimum visible tags required for a fresh board update")
     return parser
 
 
@@ -77,6 +79,7 @@ def main() -> int:
         layout=MarkerBoardLayout(tag_size_m=args.tag_size, gap_m=args.marker_board_gap),
         smoothing_alpha=args.smoothing_alpha,
         lost_timeout_s=args.lost_timeout,
+        min_visible_tags=args.min_visible_tags,
     )
 
     interval = 1.0 / max(0.1, args.fps)

@@ -36,8 +36,9 @@ class TrackingParams:
     control_rate: float = 20.0         # Hz
     board_tag_size: float = 0.045      # m, edge length of each board marker
     board_gap: float = 0.007           # m, white gap between 3x3 board markers
-    board_lost_timeout: float = 0.35   # s, tolerate short detector dropouts
+    board_lost_timeout: float = 0.8    # s, tolerate short detector dropouts
     board_smoothing_alpha: float = 0.35
+    board_min_visible_tags: int = 3
     min_valid_distance: float = 0.15    # m
     max_valid_distance: float = 2.0     # m
 
@@ -65,6 +66,7 @@ class TrackingController:
                 ),
                 smoothing_alpha=self._params.board_smoothing_alpha,
                 lost_timeout_s=self._params.board_lost_timeout,
+                min_visible_tags=self._params.board_min_visible_tags,
             )
 
         self._state = TrackingState.IDLE

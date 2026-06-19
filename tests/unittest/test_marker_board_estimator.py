@@ -46,7 +46,11 @@ class MarkerBoardEstimatorTest(unittest.TestCase):
 
     def test_ignores_missing_and_unknown_tags(self):
         layout = MarkerBoardLayout(tag_size_m=0.045, gap_m=0.007)
-        estimator = MarkerBoardEstimator(layout=layout, smoothing_alpha=1.0)
+        estimator = MarkerBoardEstimator(
+            layout=layout,
+            smoothing_alpha=1.0,
+            min_visible_tags=1,
+        )
 
         board = estimator.estimate([
             _det(99, 0.0, 0.5),
@@ -62,6 +66,7 @@ class MarkerBoardEstimatorTest(unittest.TestCase):
             layout=MarkerBoardLayout(tag_size_m=0.045, gap_m=0.007),
             smoothing_alpha=1.0,
             lost_timeout_s=0.35,
+            min_visible_tags=1,
         )
 
         first = estimator.estimate([_det(4, 0.1, 1.0)], now_s=10.0)
@@ -77,6 +82,7 @@ class MarkerBoardEstimatorTest(unittest.TestCase):
         estimator = MarkerBoardEstimator(
             layout=MarkerBoardLayout(tag_size_m=0.045, gap_m=0.007),
             smoothing_alpha=1.0,
+            min_visible_tags=1,
         )
 
         board = estimator.estimate([
@@ -87,6 +93,30 @@ class MarkerBoardEstimatorTest(unittest.TestCase):
         self.assertIsNotNone(board)
         self.assertTrue(math.isfinite(board.angle_h))
         self.assertAlmostEqual(board.angle_h, 0.0, places=6)
+
+    def test_default_requires_three_visible_tags_for_fresh_update(self):
+        estimator = MarkerBoardEstimator(
+            layout=MarkerBoardLayout(tag_size_m=0.045, gap_m=0.007),
+            smoothing_alpha=1.0,
+        )
+
+        weak = estimator.estimate([
+            _det(4, 0.0, 1.0),
+            _det(5, 0.052, 1.0),
+        ], now_s=1.0)
+        strong = estimator.estimate([
+            _det(3, -0.052, 1.0),
+            _det(4, 0.0, 1.0),
+            _det(5, 0.052, 1.0),
+        ], now_s=1.2)
+        held = estimator.estimate([
+            _det(4, 0.0, 1.0),
+        ], now_s=1.4)
+
+        self.assertIsNone(weak)
+        self.assertIsNotNone(strong)
+        self.assertIsNotNone(held)
+        self.assertTrue(held.held)
 
 
 if __name__ == "__main__":

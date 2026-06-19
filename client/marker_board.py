@@ -60,13 +60,17 @@ class MarkerBoardEstimator:
         self,
         layout: MarkerBoardLayout,
         smoothing_alpha: float = 0.35,
-        lost_timeout_s: float = 0.35,
+        lost_timeout_s: float = 0.8,
+        min_visible_tags: int = 3,
     ):
         if not 0.0 < smoothing_alpha <= 1.0:
             raise ValueError("smoothing_alpha must be in (0, 1]")
+        if min_visible_tags < 1:
+            raise ValueError("min_visible_tags must be >= 1")
         self._layout = layout
         self._alpha = smoothing_alpha
         self._lost_timeout_s = lost_timeout_s
+        self._min_visible_tags = min_visible_tags
         self._last_target: Optional[BoardTarget] = None
         self._last_visible_s: Optional[float] = None
 
@@ -92,7 +96,7 @@ class MarkerBoardEstimator:
             tag_x, tag_y = offset
             centers.append(vec - np.array([tag_x, tag_y, 0.0], dtype=np.float64))
 
-        if not centers:
+        if len(centers) < self._min_visible_tags:
             if (
                 self._last_target is not None
                 and self._last_visible_s is not None
