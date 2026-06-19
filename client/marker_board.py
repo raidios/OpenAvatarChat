@@ -83,6 +83,10 @@ class MarkerBoardEstimator:
             if offset is None:
                 continue
             vec = np.asarray(tvec, dtype=np.float64).reshape(3)
+            if not np.all(np.isfinite(vec)):
+                continue
+            if vec[2] <= 0.0:
+                continue
             # Board X is aligned with camera X for the near-frontal tracking
             # case. Vertical offset is included for distance/angle_v stability.
             tag_x, tag_y = offset
@@ -110,6 +114,8 @@ class MarkerBoardEstimator:
             fused = self._alpha * raw + (1.0 - self._alpha) * self._last_target.tvec
         else:
             fused = raw
+        if not np.all(np.isfinite(fused)) or fused[2] <= 0.0:
+            return None
 
         distance = float(np.linalg.norm(fused))
         angle_h = float(math.atan2(fused[0], fused[2]))

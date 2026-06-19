@@ -73,6 +73,21 @@ class MarkerBoardEstimatorTest(unittest.TestCase):
         self.assertAlmostEqual(held.angle_h, first.angle_h, places=6)
         self.assertIsNone(lost)
 
+    def test_ignores_non_finite_pose_candidates(self):
+        estimator = MarkerBoardEstimator(
+            layout=MarkerBoardLayout(tag_size_m=0.045, gap_m=0.007),
+            smoothing_alpha=1.0,
+        )
+
+        board = estimator.estimate([
+            _det(4, float("nan"), 1.0),
+            _det(5, 0.052, 1.0),
+        ])
+
+        self.assertIsNotNone(board)
+        self.assertTrue(math.isfinite(board.angle_h))
+        self.assertAlmostEqual(board.angle_h, 0.0, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

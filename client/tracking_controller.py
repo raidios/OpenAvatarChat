@@ -26,8 +26,8 @@ class TrackingState(enum.Enum):
 @dataclass
 class TrackingParams:
     tracking_distance: float = 0.6      # desired follow distance (m)
-    max_linear_speed: float = 1.5       # m/s
-    max_angular_speed: float = 5.0      # rad/s
+    max_linear_speed: float = 0.30      # m/s
+    max_angular_speed: float = 1.2      # rad/s
     kp_angle: float = 2.5              # P gain for heading alignment
     kd_angle: float = 0.5             # D gain for heading alignment
     kp_distance: float = 0.5          # P gain for distance
@@ -38,6 +38,8 @@ class TrackingParams:
     board_gap: float = 0.007           # m, white gap between 3x3 board markers
     board_lost_timeout: float = 0.35   # s, tolerate short detector dropouts
     board_smoothing_alpha: float = 0.35
+    min_valid_distance: float = 0.15    # m
+    max_valid_distance: float = 2.0     # m
 
 
 class TrackingController:
@@ -233,10 +235,18 @@ class TrackingController:
             print(f"[tracking] Tag lost (last seen {angle_deg:.1f}° to the {direction})")
             self._set_state(TrackingState.IDLE)
             return
+        if getattr(target, "held", False):
+            self._send_stop()
+            return
 
         p = self._params
         angle_h = target.angle_h
         dist = target.distance
+        if not self._target_is_valid(angle_h, dist):
+            self._send_stop()
+            print("[tracking] Invalid target pose; stopping")
+            self._set_state(TrackingState.IDLE)
+            return
 
         self._last_angle_h = angle_h
 
@@ -274,9 +284,23 @@ class TrackingController:
 
     def _send_velocity(self, vx: float, vw: float):
         """Send velocity (m/s, rad/s) -> MCU units (m/s*1000)."""
+        if not (math.isfinite(vx) and math.isfinite(vw)):
+            self._send_stop()
+            return
+        p = self._params
+        vx = max(-p.max_linear_speed, min(p.max_linear_speed, vx))
+        vw = max(-p.max_angular_speed, min(p.max_angular_speed, vw))
         vx_mm = int(vx * 1000)
         vw_mm = int(vw * 1000)
         self._serial.send_velocity(vx_mm, 0, vw_mm)
 
     def _send_stop(self):
         self._serial.send_velocity(0, 0, 0)
+
+    def _target_is_valid(self, angle_h: float, dist: float) -> bool:
+        p = self._params
+        return (
+            math.isfinite(angle_h)
+            and math.isfinite(dist)
+            and p.min_valid_distance <= dist <= p.max_valid_distance
+        )
