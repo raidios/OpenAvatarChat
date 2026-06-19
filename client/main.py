@@ -234,13 +234,13 @@ def build_parser() -> argparse.ArgumentParser:
     trk.add_argument("--marker-board-smoothing-alpha", type=float, default=0.35,
                      help="Low-pass alpha for board pose smoothing; 1 disables "
                           "smoothing (default: 0.35)")
-    trk.add_argument("--marker-board-min-visible-tags", type=int, default=3,
+    trk.add_argument("--marker-board-min-visible-tags", type=int, default=2,
                      help="Minimum visible board markers required for a fresh "
-                          "board pose update (default: 3)")
-    trk.add_argument("--marker-board-prediction-timeout", type=float, default=0.3,
+                          "board pose update (default: 2)")
+    trk.add_argument("--marker-board-prediction-timeout", type=float, default=0.4,
                      help="Seconds to extrapolate board motion across short "
                           "dropouts before falling back to non-driving hold "
-                          "(default: 0.3)")
+                          "(default: 0.4)")
     trk.add_argument("--tracking-predicted-speed-scale", type=float, default=0.5,
                      help="Velocity multiplier while following predicted board "
                           "poses (default: 0.5)")

@@ -15,7 +15,7 @@
   - 相关：`client/ws_audio_client.py`（mute/playback）、`wakeword/sherpa_kws/...`（wake reply + playback_complete 握手）、`vad/silerovad`、`client_handler_ws.py`。
 - **0.2 ArUco/marker board 跟随卡顿/迟滞**🟡 已有低风险缓解，待更长实机回归。
   - 2026-06-19 实机结论：单 tag/多 tag 直接选最近目标会在 3x3 marker 板上频繁换目标；暗环境下自动曝光/动态降帧导致运动模糊，检测掉点明显；固定曝光测试后检测稳定性显著改善，但固定曝光不适合对话视觉长期使用。
-  - 已实现：默认把 ID 0-8 的 3x3 marker board 聚合成单一目标（45mm tag、约 7mm gap），要求至少 3 个 tag 才刷新 board pose；短暂丢失时先限速预测，再进入非驱动 hold；目标 pose 非有限/距离越界会立即停车；控制器线速度/角速度限幅，并降低角速度 D 项、加角速度变化率限制，避免 `vw` 数值尖峰。
+  - 已实现：默认把 ID 0-8 的 3x3 marker board 聚合成单一目标（45mm tag、约 7mm gap），要求至少 2 个 tag 才刷新 board pose；短暂丢失时先限速预测，再进入非驱动 hold；目标 pose 非有限/距离越界会立即停车；控制器线速度/角速度限幅，并降低角速度 D 项、加角速度变化率限制，避免 `vw` 数值尖峰。
   - 已实现：默认服务模板改走 `--camera-mode rgbd-sdk --camera orbbec`，从 Orbbec SDK 同一 pipeline 读取 color+depth，并为后续检测框取 aligned depth 预留 `get_rgbd_frame()`。UVC 启动参数 `--camera-fps`、`--camera-auto-exposure auto|manual`、`--camera-disable-dynamic-framerate`、`--camera-exposure-time`、`--camera-gain` 仅作为 `--camera-mode color` 的兜底/调试路径。
   - TODO：更长时间实机回归：不同光照下记录检测命中率、连续丢失长度、实际 FPS、`held/predicted` 比例、`cmd_vel` 间隔和 MCU 仲裁源；若仍有抖动，再考虑降低 `kp_angle` 或把远场 DSP 子进程化以减少视觉线程饥饿。
 - **0.3 情绪 tag 与回答相关性低**🟡：表情/动作触发正常，但情绪标签和回答内容语义相关性不高。疑 prompt 与模型契合度。看 `config/system_prompt.txt` 对情绪 tag 的约束、`action_tags` 白名单一致性，A/B 调 prompt。

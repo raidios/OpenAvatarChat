@@ -39,8 +39,8 @@ class TrackingParams:
     board_gap: float = 0.007           # m, white gap between 3x3 board markers
     board_lost_timeout: float = 0.8    # s, tolerate short detector dropouts
     board_smoothing_alpha: float = 0.35
-    board_min_visible_tags: int = 3
-    board_prediction_timeout: float = 0.3
+    board_min_visible_tags: int = 2
+    board_prediction_timeout: float = 0.4
     predicted_speed_scale: float = 0.5
     min_valid_distance: float = 0.15    # m
     max_valid_distance: float = 2.0     # m
