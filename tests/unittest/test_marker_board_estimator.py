@@ -1,0 +1,78 @@
+import math
+import os
+import sys
+import unittest
+from types import SimpleNamespace
+
+import numpy as np
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.join(REPO_ROOT, "client"))
+
+from marker_board import MarkerBoardEstimator, MarkerBoardLayout
+
+
+def _det(tag_id: int, x: float, z: float):
+    tvec = np.array([x, 0.0, z], dtype=np.float64)
+    return SimpleNamespace(
+        tag_id=tag_id,
+        center=(0.0, 0.0),
+        corners=np.zeros((4, 2), dtype=np.float64),
+        distance=float(np.linalg.norm(tvec)),
+        angle_h=float(math.atan2(x, z)),
+        tvec=tvec,
+    )
+
+
+class MarkerBoardEstimatorTest(unittest.TestCase):
+    def test_fuses_multiple_visible_tags_into_board_center(self):
+        layout = MarkerBoardLayout(tag_size_m=0.045, gap_m=0.007)
+        estimator = MarkerBoardEstimator(layout=layout, smoothing_alpha=1.0)
+
+        # Board center is 1m straight ahead. Visible detections come from
+        # top-left, center, and bottom-right markers of the 3x3 board.
+        detections = [
+            _det(0, -0.052, 1.0),
+            _det(4, 0.0, 1.0),
+            _det(8, 0.052, 1.0),
+        ]
+
+        board = estimator.estimate(detections)
+
+        self.assertIsNotNone(board)
+        self.assertEqual(board.tag_id, -1)
+        self.assertAlmostEqual(board.angle_h, 0.0, places=6)
+        self.assertAlmostEqual(board.distance, 1.0, places=6)
+
+    def test_ignores_missing_and_unknown_tags(self):
+        layout = MarkerBoardLayout(tag_size_m=0.045, gap_m=0.007)
+        estimator = MarkerBoardEstimator(layout=layout, smoothing_alpha=1.0)
+
+        board = estimator.estimate([
+            _det(99, 0.0, 0.5),
+            _det(5, 0.052, 0.8),
+        ])
+
+        self.assertIsNotNone(board)
+        self.assertAlmostEqual(board.angle_h, 0.0, places=6)
+        self.assertAlmostEqual(board.distance, 0.8, places=6)
+
+    def test_reuses_recent_board_pose_during_short_dropouts(self):
+        estimator = MarkerBoardEstimator(
+            layout=MarkerBoardLayout(tag_size_m=0.045, gap_m=0.007),
+            smoothing_alpha=1.0,
+            lost_timeout_s=0.35,
+        )
+
+        first = estimator.estimate([_det(4, 0.1, 1.0)], now_s=10.0)
+        held = estimator.estimate([], now_s=10.2)
+        lost = estimator.estimate([], now_s=10.5)
+
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(held)
+        self.assertAlmostEqual(held.angle_h, first.angle_h, places=6)
+        self.assertIsNone(lost)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from apriltag_tracker import AprilTagTracker
+from marker_board import MarkerBoardEstimator, MarkerBoardLayout
 from serial_comm import XProtocolSerial
 
 
@@ -33,6 +34,10 @@ class TrackingParams:
     angle_deadzone: float = 0.02       # rad – ignore small angle errors
     distance_deadzone: float = 0.05    # m – ignore small distance errors
     control_rate: float = 20.0         # Hz
+    board_tag_size: float = 0.045      # m, edge length of each board marker
+    board_gap: float = 0.007           # m, white gap between 3x3 board markers
+    board_lost_timeout: float = 0.35   # s, tolerate short detector dropouts
+    board_smoothing_alpha: float = 0.35
 
 
 class TrackingController:
@@ -49,6 +54,16 @@ class TrackingController:
         self._serial = serial
         self._params = params or TrackingParams()
         self._target_tag_id = target_tag_id
+        self._board_estimator: Optional[MarkerBoardEstimator] = None
+        if self._target_tag_id is None:
+            self._board_estimator = MarkerBoardEstimator(
+                layout=MarkerBoardLayout(
+                    tag_size_m=self._params.board_tag_size,
+                    gap_m=self._params.board_gap,
+                ),
+                smoothing_alpha=self._params.board_smoothing_alpha,
+                lost_timeout_s=self._params.board_lost_timeout,
+            )
 
         self._state = TrackingState.IDLE
         self._state_lock = threading.Lock()
@@ -155,12 +170,15 @@ class TrackingController:
 
         dets = self._tracker.detections
         target = None
-        for d in dets:
-            if self._target_tag_id is not None and d.tag_id != self._target_tag_id:
-                continue
-            if d.distance is not None:
-                if target is None or d.distance < target.distance:
-                    target = d
+        if self._board_estimator is not None:
+            target = self._board_estimator.estimate(dets)
+        else:
+            for d in dets:
+                if self._target_tag_id is not None and d.tag_id != self._target_tag_id:
+                    continue
+                if d.distance is not None:
+                    if target is None or d.distance < target.distance:
+                        target = d
 
         tag_visible = target is not None
 

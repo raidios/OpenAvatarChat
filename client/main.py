@@ -203,6 +203,15 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Only track this tag ID (default: any)")
     trk.add_argument("--tracking-distance", type=float, default=0.6,
                      help="Desired follow distance in metres (default: 0.6)")
+    trk.add_argument("--marker-board-gap", type=float, default=0.007,
+                     help="Gap between markers in the 3x3 board, in metres "
+                          "(default: 0.007)")
+    trk.add_argument("--marker-board-lost-timeout", type=float, default=0.35,
+                     help="Seconds to hold the last board pose across short "
+                          "detector dropouts (default: 0.35)")
+    trk.add_argument("--marker-board-smoothing-alpha", type=float, default=0.35,
+                     help="Low-pass alpha for board pose smoothing; 1 disables "
+                          "smoothing (default: 0.35)")
 
     # -- serial --------------------------------------------------------------
     ser = parser.add_argument_group("Serial (MCU)")
@@ -498,6 +507,10 @@ async def run(
             from tracking_controller import TrackingController, TrackingParams
             params = TrackingParams(
                 tracking_distance=args.tracking_distance,
+                board_tag_size=args.tag_size,
+                board_gap=args.marker_board_gap,
+                board_lost_timeout=args.marker_board_lost_timeout,
+                board_smoothing_alpha=args.marker_board_smoothing_alpha,
             )
             tracking_ctl = TrackingController(
                 tracker=tag_tracker,
