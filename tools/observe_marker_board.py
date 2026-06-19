@@ -62,7 +62,7 @@ def main() -> int:
     from apriltag_tracker import AprilTagTracker
 
     camera = SharedCamera(
-        source=args.camera,
+        camera_id=args.camera,
         width=args.camera_width,
         height=args.camera_height,
     )
