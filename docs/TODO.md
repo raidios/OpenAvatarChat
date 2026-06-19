@@ -2,7 +2,7 @@
 
 > 这是从代码、文档、Cursor 规则里挖出来的**有价值但未完成 / 卡住 / 切了 Plan B / 临时废弃**的事项，供工作告一段落时回顾、决定下一步方向。
 > 状态标记：🔴 卡住/阻塞　🟡 进行中或部分可用　🟢 已有可用兜底（优化项）　⚪ 想法/备选。
-> 与运行现状对照见 [PROJECT_STATE.md](PROJECT_STATE.md)。最后更新：2026-05-30。
+> 与运行现状对照见 [PROJECT_STATE.md](PROJECT_STATE.md)。最后更新：2026-06-19。
 
 ## 0. 🟡 当前已知问题（用户实测确认，优先诊断 —— 下一步重点）
 
@@ -11,10 +11,12 @@
 - **0.1 VAD "有时"唤醒困难（接麦阵后）**🟡 现象仍在，但"DSP 电平过低"已**证伪**。
   - 受控测量（有声起止框定窗口，2026-05-31 00:18，**确认有语音**）：真实语音 peak **-20~-28 dBFS**（rms 222~377），远高于环境噪声 ~-45；Silero `max_prob=0.95~0.96`（阈值 0.25 绰绰有余）；ASR 出文本、LLM 回复、TTS 出声——**整条对话闭环本次跑通**。→ 之前那组 -45dBFS 是**环境噪声不是语音**，"DSP 输出电平过低"不成立（教训：未确认有语音就拿历史 `[mic]` 数值下结论是错的）。
   - 新线索（更可能的间歇性根因）：**playback↔mic 门控时序**。日志见 `[mic] mute=True is_playing=True mute_until_in=-1393.29s`（疑 stale/异常时间戳）+ 服务端 `Wake reply did not receive playback_complete in time; enabling VAD (server failsafe)`。怀疑唤醒应答/TTS 播放与 VAD 重新使能的握手在某些情况下错位 → 偶发吞掉语音。**需抓一次失败实例**对比成功/失败时的 mute/playback 状态。
+  - TODO：在下一次车上复现时同时抓客户端与服务端状态时间线：客户端 `is_playing` / `mute_until` / `mic_should_mute` / `playback_done_event` / `playback_complete` 发送时间；服务端 `wake_session_active` / `enable_vad` / `playback_complete` 接收时间 / wake failsafe 触发时间。目标是确认失败发生在客户端未发、服务端未收、还是 mute/VAD 状态时序错位。
   - 相关：`client/ws_audio_client.py`（mute/playback）、`wakeword/sherpa_kws/...`（wake reply + playback_complete 握手）、`vad/silerovad`、`client_handler_ws.py`。
 - **0.2 ArUco 跟踪卡顿/迟滞**🟢根因已定位（车上实测）：**marker 检测严重间歇**——静止 tag 也是"检测~1s → Tag lost → IDLE → ~7s 后重获"反复横跳，控制器每次丢失即 `TRACKING→IDLE` 发零速停车 → 一顿一顿。**机制**：客户端单进程，远场 DSP 线程 **99.9% CPU（GIL-bound）**，4 核虽有空闲但 **Python GIL** 抢占，相机/视觉线程被饿 → 丢帧 → 检测断续。相机=`/dev/video0` USB2.0 640×480（非 Orbbec），fps 未知可能不稳。原"300ms cmd_vel 超时"假设是次要放大器，主因是检测丢帧。**修复方向**：① 跟踪状态加 hold/debounce（短暂丢失保持上一速度，类似已有的 `--tag-expression-holdoff-ms`）；② 降 DSP 的 GIL 占用（DSP 移子进程 / C 扩展 / 降处理帧率），给视觉线程让出 GIL；③ 核实相机 fps，必要时换相机或调检测参数。相关：`apriltag_tracker.py`、`tracking_controller.py`、`audio_frontend/dsp/pipeline.py`、`camera.py`。
+  - TODO：先做只读复核与低风险缓解：记录 `apriltag_tracker` 检测命中率/连续丢失长度/相机实际 fps，同时看 `tracking_controller` 是否每次丢失都触发 `Tag lost -> IDLE -> send_stop`；确认后优先加短暂丢失 hold/debounce，再评估 DSP 子进程化或降频。
 - **0.3 情绪 tag 与回答相关性低**🟡：表情/动作触发正常，但情绪标签和回答内容语义相关性不高。疑 prompt 与模型契合度。看 `config/system_prompt.txt` 对情绪 tag 的约束、`action_tags` 白名单一致性，A/B 调 prompt。
-- **0.4 🔴 安全：DashScope api_key 在 journald 明文留存**：服务端 `chat_engine/core/handler_manager.py:register_handler` 在 INFO 日志里**打印了完整 handler config，包含 `api_key='sk-…'`**（QwenASR/LLM 从 `.env` 注入的 key 被原样打到 journal）。key 本身**不在 git**（`.env` 已忽略），但 journald 明文可读、且会随日志外泄。**处理**：① 轮换该 DashScope key（已在日志/调试过程中暴露）；② 在 `register_handler` 日志里对 `api_key`/secret 字段脱敏（如 `sk-…****`）。
+- **0.4 🔴 安全：DashScope api_key 在 journald 明文留存**：服务端 `chat_engine/core/handler_manager.py:register_handler` 在 INFO 日志里**打印了完整 handler config，包含 `api_key='sk-…'`**（QwenASR/LLM 从 `.env` 注入的 key 被原样打到 journal）。key 本身**不在 git**（`.env` 已忽略），但 journald 明文可读、且会随日志外泄。**处理**：① 轮换该 DashScope key（已在日志/调试过程中暴露）；② `register_handler` 日志脱敏已在本地实现并加 unittest（`tests/unittest/test_handler_manager_redaction.py`），车端待部署并重启服务后生效。
 
 ## 1. 🟡 DNS 降噪（DTLN → Hailo-10H）—— HEF 已成、因 buzz 默认关
 

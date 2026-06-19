@@ -15,6 +15,7 @@ from loguru import logger
 
 from chat_engine.common.client_handler_base import ClientHandlerBase
 from chat_engine.common.handler_base import HandlerBaseInfo, HandlerBase
+from chat_engine.core.log_redaction import redact_sensitive_config_for_log
 from chat_engine.data_models.chat_engine_config_data import HandlerBaseConfigModel, ChatEngineConfigModel
 from engine_utils.directory_info import DirectoryInfo
 
@@ -127,7 +128,8 @@ class HandlerManager:
             registry.base_info = base_info
             registry.handler = handler
             registry.handler_config = config
-            logger.info(f"Registered handler {name}({type(handler)}) with config: {config}")
+            safe_config = redact_sensitive_config_for_log(config)
+            logger.info(f"Registered handler {name}({type(handler)}) with config: {safe_config}")
 
     def load_handlers(self, engine_config: ChatEngineConfigModel,
                       app: Optional[FastAPI] = None,
