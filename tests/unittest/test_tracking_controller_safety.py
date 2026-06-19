@@ -48,6 +48,7 @@ class TrackingControllerSafetyTest(unittest.TestCase):
         ctl = _controller()
         target = SimpleNamespace(
             held=True,
+            predicted=False,
             angle_h=0.0,
             distance=2.0,
         )
@@ -56,6 +57,22 @@ class TrackingControllerSafetyTest(unittest.TestCase):
 
         self.assertEqual(ctl._serial.sent[-1], (0, 0, 0))
         self.assertEqual(ctl.state, TrackingState.TRACKING)
+
+    def test_predicted_board_pose_drives_with_reduced_speed(self):
+        ctl = _controller()
+        target = SimpleNamespace(
+            held=True,
+            predicted=True,
+            angle_h=0.2,
+            distance=1.2,
+        )
+
+        ctl._handle_tracking(True, target)
+
+        vx, _vy, vw = ctl._serial.sent[-1]
+        self.assertGreater(vx, 0)
+        self.assertLessEqual(abs(vx), 150)
+        self.assertLessEqual(abs(vw), 600)
 
     def test_non_finite_target_stops_and_returns_to_idle(self):
         ctl = _controller()

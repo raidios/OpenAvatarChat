@@ -32,7 +32,8 @@ def format_observation(detections: Iterable[object], target: Optional[BoardTarge
     angle_deg = math.degrees(target.angle_h)
     return (
         f"{prefix} board dist={target.distance:.2f}m "
-        f"angle={angle_deg:.1f}deg held={target.held}"
+        f"angle={angle_deg:.1f}deg held={target.held} "
+        f"predicted={getattr(target, 'predicted', False)}"
     )
 
 
@@ -53,6 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Stop after N seconds; 0 means run until Ctrl+C")
     parser.add_argument("--smoothing-alpha", type=float, default=0.35)
     parser.add_argument("--lost-timeout", type=float, default=0.8)
+    parser.add_argument("--prediction-timeout", type=float, default=0.3)
     parser.add_argument("--min-visible-tags", type=int, default=3,
                         help="Minimum visible tags required for a fresh board update")
     return parser
@@ -80,6 +82,7 @@ def main() -> int:
         smoothing_alpha=args.smoothing_alpha,
         lost_timeout_s=args.lost_timeout,
         min_visible_tags=args.min_visible_tags,
+        prediction_timeout_s=args.prediction_timeout,
     )
 
     interval = 1.0 / max(0.1, args.fps)

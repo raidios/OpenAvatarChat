@@ -53,6 +53,7 @@ class BoardTarget:
     tvec: np.ndarray
     visible_count: int
     held: bool = False
+    predicted: bool = False
 
 
 class MarkerBoardEstimator:
@@ -62,6 +63,7 @@ class MarkerBoardEstimator:
         smoothing_alpha: float = 0.35,
         lost_timeout_s: float = 0.8,
         min_visible_tags: int = 3,
+        prediction_timeout_s: float = 0.3,
     ):
         if not 0.0 < smoothing_alpha <= 1.0:
             raise ValueError("smoothing_alpha must be in (0, 1]")
@@ -71,8 +73,11 @@ class MarkerBoardEstimator:
         self._alpha = smoothing_alpha
         self._lost_timeout_s = lost_timeout_s
         self._min_visible_tags = min_visible_tags
+        self._prediction_timeout_s = prediction_timeout_s
         self._last_target: Optional[BoardTarget] = None
+        self._prev_target: Optional[BoardTarget] = None
         self._last_visible_s: Optional[float] = None
+        self._prev_visible_s: Optional[float] = None
 
     def estimate(self, detections: Iterable[object], now_s: Optional[float] = None) -> Optional[BoardTarget]:
         now = time.monotonic() if now_s is None else now_s
@@ -102,13 +107,21 @@ class MarkerBoardEstimator:
                 and self._last_visible_s is not None
                 and now - self._last_visible_s <= self._lost_timeout_s
             ):
+                predicted_tvec = self._predict_tvec(now)
+                if predicted_tvec is not None:
+                    return self._target_from_tvec(
+                        predicted_tvec,
+                        visible_count=len(centers),
+                        held=True,
+                        predicted=True,
+                    )
                 return BoardTarget(
                     tag_id=self._last_target.tag_id,
                     distance=self._last_target.distance,
                     angle_h=self._last_target.angle_h,
                     angle_v=self._last_target.angle_v,
                     tvec=self._last_target.tvec.copy(),
-                    visible_count=0,
+                    visible_count=len(centers),
                     held=True,
                 )
             return None
@@ -121,17 +134,48 @@ class MarkerBoardEstimator:
         if not np.all(np.isfinite(fused)) or fused[2] <= 0.0:
             return None
 
-        distance = float(np.linalg.norm(fused))
-        angle_h = float(math.atan2(fused[0], fused[2]))
-        angle_v = float(math.atan2(fused[1], fused[2]))
-        target = BoardTarget(
+        target = self._target_from_tvec(fused, visible_count=len(centers))
+        self._prev_target = self._last_target
+        self._prev_visible_s = self._last_visible_s
+        self._last_target = target
+        self._last_visible_s = now
+        return target
+
+    def _target_from_tvec(
+        self,
+        tvec: np.ndarray,
+        visible_count: int,
+        held: bool = False,
+        predicted: bool = False,
+    ) -> BoardTarget:
+        distance = float(np.linalg.norm(tvec))
+        angle_h = float(math.atan2(tvec[0], tvec[2]))
+        angle_v = float(math.atan2(tvec[1], tvec[2]))
+        return BoardTarget(
             tag_id=-1,
             distance=distance,
             angle_h=angle_h,
             angle_v=angle_v,
-            tvec=fused,
-            visible_count=len(centers),
+            tvec=tvec.copy(),
+            visible_count=visible_count,
+            held=held,
+            predicted=predicted,
         )
-        self._last_target = target
-        self._last_visible_s = now
-        return target
+
+    def _predict_tvec(self, now: float) -> Optional[np.ndarray]:
+        if (
+            self._last_target is None
+            or self._prev_target is None
+            or self._last_visible_s is None
+            or self._prev_visible_s is None
+        ):
+            return None
+        dt = self._last_visible_s - self._prev_visible_s
+        horizon = now - self._last_visible_s
+        if dt <= 0.0 or horizon < 0.0 or horizon > self._prediction_timeout_s:
+            return None
+        velocity = (self._last_target.tvec - self._prev_target.tvec) / dt
+        predicted = self._last_target.tvec + velocity * horizon
+        if not np.all(np.isfinite(predicted)) or predicted[2] <= 0.0:
+            return None
+        return predicted

@@ -39,6 +39,8 @@ class TrackingParams:
     board_lost_timeout: float = 0.8    # s, tolerate short detector dropouts
     board_smoothing_alpha: float = 0.35
     board_min_visible_tags: int = 3
+    board_prediction_timeout: float = 0.3
+    predicted_speed_scale: float = 0.5
     min_valid_distance: float = 0.15    # m
     max_valid_distance: float = 2.0     # m
 
@@ -67,6 +69,7 @@ class TrackingController:
                 smoothing_alpha=self._params.board_smoothing_alpha,
                 lost_timeout_s=self._params.board_lost_timeout,
                 min_visible_tags=self._params.board_min_visible_tags,
+                prediction_timeout_s=self._params.board_prediction_timeout,
             )
 
         self._state = TrackingState.IDLE
@@ -237,7 +240,8 @@ class TrackingController:
             print(f"[tracking] Tag lost (last seen {angle_deg:.1f}° to the {direction})")
             self._set_state(TrackingState.IDLE)
             return
-        if getattr(target, "held", False):
+        is_predicted = bool(getattr(target, "predicted", False))
+        if getattr(target, "held", False) and not is_predicted:
             self._send_stop()
             return
 
@@ -279,6 +283,9 @@ class TrackingController:
         # reduce forward speed when turning sharply
         if abs(angle_err) > 0.3:
             vx *= 0.5
+        if is_predicted:
+            vx *= p.predicted_speed_scale
+            vw *= p.predicted_speed_scale
 
         self._send_velocity(vx, vw)
 

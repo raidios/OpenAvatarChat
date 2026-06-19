@@ -12,16 +12,16 @@ from observe_marker_board import format_observation
 
 class ObserveMarkerBoardTest(unittest.TestCase):
     def test_formats_visible_board_target(self):
-        target = SimpleNamespace(distance=0.623, angle_h=-0.01745, held=False)
+        target = SimpleNamespace(distance=0.623, angle_h=-0.01745, held=False, predicted=False)
         line = format_observation([SimpleNamespace(tag_id=2), SimpleNamespace(tag_id=0)], target)
 
-        self.assertEqual(line, "tags=2 ids=0,2 board dist=0.62m angle=-1.0deg held=False")
+        self.assertEqual(line, "tags=2 ids=0,2 board dist=0.62m angle=-1.0deg held=False predicted=False")
 
     def test_formats_held_board_target(self):
-        target = SimpleNamespace(distance=0.7, angle_h=0.05236, held=True)
+        target = SimpleNamespace(distance=0.7, angle_h=0.05236, held=True, predicted=True)
         line = format_observation([], target)
 
-        self.assertEqual(line, "tags=0 ids=- board dist=0.70m angle=3.0deg held=True")
+        self.assertEqual(line, "tags=0 ids=- board dist=0.70m angle=3.0deg held=True predicted=True")
 
     def test_formats_lost_board_target(self):
         line = format_observation([], None)

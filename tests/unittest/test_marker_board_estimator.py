@@ -118,6 +118,37 @@ class MarkerBoardEstimatorTest(unittest.TestCase):
         self.assertIsNotNone(held)
         self.assertTrue(held.held)
 
+    def test_predicts_short_dropouts_from_recent_board_velocity(self):
+        estimator = MarkerBoardEstimator(
+            layout=MarkerBoardLayout(tag_size_m=0.045, gap_m=0.007),
+            smoothing_alpha=1.0,
+            lost_timeout_s=0.8,
+            prediction_timeout_s=0.3,
+        )
+
+        first = estimator.estimate([
+            _det(3, -0.052, 1.0),
+            _det(4, 0.0, 1.0),
+            _det(5, 0.052, 1.0),
+        ], now_s=1.0)
+        second = estimator.estimate([
+            _det(3, -0.032, 1.0),
+            _det(4, 0.020, 1.0),
+            _det(5, 0.072, 1.0),
+        ], now_s=1.1)
+        predicted = estimator.estimate([], now_s=1.2)
+        held_after_prediction = estimator.estimate([], now_s=1.5)
+
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertIsNotNone(predicted)
+        self.assertTrue(predicted.held)
+        self.assertTrue(predicted.predicted)
+        self.assertAlmostEqual(predicted.tvec[0], 0.040, places=6)
+        self.assertIsNotNone(held_after_prediction)
+        self.assertTrue(held_after_prediction.held)
+        self.assertFalse(held_after_prediction.predicted)
+
 
 if __name__ == "__main__":
     unittest.main()

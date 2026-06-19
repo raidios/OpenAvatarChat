@@ -215,6 +215,13 @@ def build_parser() -> argparse.ArgumentParser:
     trk.add_argument("--marker-board-min-visible-tags", type=int, default=3,
                      help="Minimum visible board markers required for a fresh "
                           "board pose update (default: 3)")
+    trk.add_argument("--marker-board-prediction-timeout", type=float, default=0.3,
+                     help="Seconds to extrapolate board motion across short "
+                          "dropouts before falling back to non-driving hold "
+                          "(default: 0.3)")
+    trk.add_argument("--tracking-predicted-speed-scale", type=float, default=0.5,
+                     help="Velocity multiplier while following predicted board "
+                          "poses (default: 0.5)")
 
     # -- serial --------------------------------------------------------------
     ser = parser.add_argument_group("Serial (MCU)")
@@ -515,6 +522,8 @@ async def run(
                 board_lost_timeout=args.marker_board_lost_timeout,
                 board_smoothing_alpha=args.marker_board_smoothing_alpha,
                 board_min_visible_tags=args.marker_board_min_visible_tags,
+                board_prediction_timeout=args.marker_board_prediction_timeout,
+                predicted_speed_scale=args.tracking_predicted_speed_scale,
             )
             tracking_ctl = TrackingController(
                 tracker=tag_tracker,
