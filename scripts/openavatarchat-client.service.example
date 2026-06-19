@@ -29,6 +29,8 @@ ExecStartPre=/bin/sleep 5
 # 关掉旋转（保留 KWS+DSP）：再加 --no-wake-orient。
 ExecStart=/home/USER/codes/OpenAvatarChat/.venv/bin/python client/main.py \
     --server ws://127.0.0.1:8282/ws/chat \
+    --camera-mode rgbd-sdk \
+    --camera orbbec \
     --serial-port /dev/ttyAMA0 \
     --tag-size 0.045 \
     --calib-file config/camera_calib.json \

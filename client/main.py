@@ -52,7 +52,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cv2
 import numpy as np
 
-from camera import SharedCamera
+from camera import SharedCamera, V4L2Controls
 from opencv_gui import (
     ensure_local_display,
     opencv_highgui_available,
@@ -67,6 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- camera --------------------------------------------------------------
     cam = parser.add_argument_group("Camera")
+    cam.add_argument("--camera-mode", type=str, default="rgbd-sdk",
+                     choices=["rgbd-sdk", "color"],
+                     help="Camera pipeline. rgbd-sdk uses Orbbec SDK color+depth "
+                          "with hardware D2C; color keeps the legacy color-only "
+                          "V4L2/Orbbec path. Default: rgbd-sdk.")
     cam.add_argument("--camera", type=str, default="auto",
                      help="Camera: 'auto' (first V4L2 capture-capable /dev/videoN, "
                           "else Orbbec SDK if lib present), 'orbbec' (Gemini Pro SDK "
@@ -74,6 +79,23 @@ def build_parser() -> argparse.ArgumentParser:
                           "Note: Orbbec RGB via SDK uses 640x480@30 MJPG on this device.")
     cam.add_argument("--camera-width", type=int, default=640)
     cam.add_argument("--camera-height", type=int, default=480)
+    cam.add_argument("--camera-fps", type=float, default=0.0,
+                     help="Requested camera FPS. 0 keeps backend default. "
+                          "Only color mode uses this for V4L2 tuning.")
+    cam.add_argument("--camera-auto-exposure", type=str, default="default",
+                     choices=["default", "auto", "manual"],
+                     help="UVC auto_exposure mode. default leaves the camera setting "
+                          "unchanged; auto keeps exposure adaptive; manual enables "
+                          "--camera-exposure-time.")
+    cam.add_argument("--camera-disable-dynamic-framerate", action="store_true",
+                     help="For UVC cameras, disable exposure_dynamic_framerate so "
+                          "auto exposure cannot lower FPS as aggressively in dim light. "
+                          "Only applies to --camera-mode color with /dev/video*.")
+    cam.add_argument("--camera-exposure-time", type=int, default=None,
+                     help="UVC exposure_time_absolute. Usually use only with "
+                          "--camera-auto-exposure manual.")
+    cam.add_argument("--camera-gain", type=int, default=None,
+                     help="UVC gain override. Leave unset to preserve auto behavior.")
 
     # -- chat ----------------------------------------------------------------
     chat = parser.add_argument_group("Chat")
@@ -480,9 +502,32 @@ async def run(
     camera = None
     if need_camera:
         cam_id = args.camera
+        rgbd_camera = args.camera_mode == "rgbd-sdk"
+        if rgbd_camera and cam_id == "auto":
+            cam_id = "orbbec"
+        elif rgbd_camera and not str(cam_id).lower().startswith("orbbec"):
+            print("[main] Warning: --camera-mode rgbd-sdk requires Orbbec SDK; "
+                  "forcing --camera orbbec")
+            cam_id = "orbbec"
         if cam_id != "auto" and cam_id.isdigit():
             cam_id = int(cam_id)
-        camera = SharedCamera(cam_id, args.camera_width, args.camera_height)
+        v4l2_controls = V4L2Controls(
+            auto_exposure=(
+                None if args.camera_auto_exposure == "default"
+                else args.camera_auto_exposure
+            ),
+            exposure_time_absolute=args.camera_exposure_time,
+            gain=args.camera_gain,
+            disable_dynamic_framerate=args.camera_disable_dynamic_framerate,
+        )
+        camera = SharedCamera(
+            cam_id,
+            args.camera_width,
+            args.camera_height,
+            fps=args.camera_fps,
+            v4l2_controls=v4l2_controls,
+            rgbd=rgbd_camera,
+        )
         camera.start()
         if not camera.is_opened:
             print("[main] Warning: camera unavailable")

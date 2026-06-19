@@ -14,6 +14,7 @@
 # openavatarchat-client.service  (WantedBy=gnome-session.target, 需图形自动登录 DISPLAY=:0)
 .venv/bin/python client/main.py --expression \
     --server ws://127.0.0.1:8282/ws/chat \
+    --camera-mode rgbd-sdk --camera orbbec \
     --serial-port /dev/ttyAMA0 --tag-size 0.045 --calib-file config/camera_calib.json \
     --farfield --farfield-mic-yaw-offset-deg 30 \
     --wake-kws-keywords config/keywords.txt --wake-kws-threshold 0.25 \

@@ -27,9 +27,10 @@ class TrackingState(enum.Enum):
 class TrackingParams:
     tracking_distance: float = 0.6      # desired follow distance (m)
     max_linear_speed: float = 0.30      # m/s
-    max_angular_speed: float = 1.2      # rad/s
+    max_angular_speed: float = 0.8      # rad/s
+    max_angular_accel: float = 4.0      # rad/s^2, limits sudden yaw spikes
     kp_angle: float = 2.5              # P gain for heading alignment
-    kd_angle: float = 0.5             # D gain for heading alignment
+    kd_angle: float = 0.15            # D gain for heading alignment
     kp_distance: float = 0.5          # P gain for distance
     angle_deadzone: float = 0.02       # rad – ignore small angle errors
     distance_deadzone: float = 0.05    # m – ignore small distance errors
@@ -80,6 +81,7 @@ class TrackingController:
         self._last_angle_error: float = 0.0
         self._last_control_time: float = 0.0
         self._last_angle_h: float = 0.0
+        self._last_vw: float = 0.0
         self._estop: bool = False
         # 当 MotionPlayer 回放预录 clip 时调用 pause()：跟随循环会进入 IDLE
         # 并停止下发 cmd_vel，让出控制权给 clip。clip 结束 resume() 后恢复。
@@ -258,6 +260,7 @@ class TrackingController:
 
         now = time.monotonic()
         dt = now - self._last_control_time if self._last_control_time else 0.02
+        dt = max(0.001, min(dt, 0.2))
         self._last_control_time = now
 
         # angular control (P-D)
@@ -287,6 +290,7 @@ class TrackingController:
             vx *= p.predicted_speed_scale
             vw *= p.predicted_speed_scale
 
+        vw = self._limit_angular_step(vw, dt)
         self._send_velocity(vx, vw)
 
     # -- motor helpers -------------------------------------------------------
@@ -304,7 +308,20 @@ class TrackingController:
         self._serial.send_velocity(vx_mm, 0, vw_mm)
 
     def _send_stop(self):
+        self._last_vw = 0.0
         self._serial.send_velocity(0, 0, 0)
+
+    def _limit_angular_step(self, vw: float, dt: float) -> float:
+        p = self._params
+        max_delta = max(0.0, p.max_angular_accel) * max(0.0, dt)
+        if max_delta <= 0:
+            self._last_vw = vw
+            return vw
+        last_vw = getattr(self, "_last_vw", 0.0)
+        delta = max(-max_delta, min(max_delta, vw - last_vw))
+        limited = last_vw + delta
+        self._last_vw = limited
+        return limited
 
     def _target_is_valid(self, angle_h: float, dist: float) -> bool:
         p = self._params

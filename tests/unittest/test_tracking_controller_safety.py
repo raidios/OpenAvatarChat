@@ -10,6 +10,8 @@ from types import SimpleNamespace
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(REPO_ROOT, "client"))
 
+sys.modules.setdefault("numpy", types.SimpleNamespace(ndarray=object))
+
 class _FakeCv2(types.SimpleNamespace):
     def __getattr__(self, name):
         value = object()
@@ -40,6 +42,7 @@ def _controller() -> TrackingController:
     ctl._last_angle_error = 0.0
     ctl._last_control_time = 1.0
     ctl._last_angle_h = 0.0
+    ctl._last_vw = 0.0
     return ctl
 
 
@@ -91,9 +94,18 @@ class TrackingControllerSafetyTest(unittest.TestCase):
         params = TrackingParams()
 
         self.assertLessEqual(params.max_linear_speed, 0.35)
-        self.assertLessEqual(params.max_angular_speed, 1.5)
+        self.assertLessEqual(params.max_angular_speed, 0.9)
+        self.assertLessEqual(params.kd_angle, 0.2)
         self.assertTrue(math.isfinite(params.max_linear_speed))
         self.assertTrue(math.isfinite(params.max_angular_speed))
+
+    def test_angular_velocity_step_is_rate_limited(self):
+        ctl = _controller()
+
+        limited = ctl._limit_angular_step(0.8, 0.05)
+
+        self.assertLessEqual(limited, 0.2)
+        self.assertEqual(ctl._last_vw, limited)
 
 
 if __name__ == "__main__":
