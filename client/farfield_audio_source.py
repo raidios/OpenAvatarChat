@@ -83,6 +83,9 @@ class FarfieldAudioSource:
         connect_timeout: float = 5.0,
         mic_yaw_offset_deg: float = 30.0,
         wake_spotter: "Optional[object]" = None,
+        wake_doa_min_peak: float = 1.20,
+        wake_doa_mid_peak: float = 1.10,
+        wake_doa_consensus_deg: float = 45.0,
     ):
         """``static_az_body_deg`` and every azimuth crossing this boundary
         is interpreted in **body frame** (0° = vehicle forward). Internally
@@ -110,6 +113,9 @@ class FarfieldAudioSource:
         the bug flipped sign across the body forward axis).
         """
         self.mic_yaw_offset_deg = float(mic_yaw_offset_deg)
+        self.wake_doa_min_peak = float(wake_doa_min_peak)
+        self.wake_doa_mid_peak = float(wake_doa_mid_peak)
+        self.wake_doa_consensus_deg = float(wake_doa_consensus_deg)
         self.host = host
         self.port = port
         self.sample_rate = sample_rate
@@ -301,23 +307,103 @@ class FarfieldAudioSource:
         Returns body-frame degrees, or ``None`` if not even the
         streaming estimate is available (pipeline never warmed up).
         """
+        latest_mic: Optional[float] = None
+        latest_body: Optional[float] = None
         try:
-            res = self._pipeline.wake_window_doa()
+            latest_mic = float(self._pipeline.latest_doa_deg)
+            latest_body = self._mic_to_body_az(latest_mic)
         except Exception:
-            res = None
-        if res is None:
-            try:
-                res = self._pipeline.dominant_doa(top_k_pct=30.0)
-            except Exception:
-                res = None
-        if res is not None:
-            mic_az_deg, _norm_peak = res
-            return self._mic_to_body_az(float(mic_az_deg))
-        # last resort: streaming snapshot
+            pass
+
+        wake_res = None
+        candidates = []
         try:
-            return float(self.latest_doa_deg)
+            wake_res = self._pipeline.wake_window_doa()
         except Exception:
+            wake_res = None
+        if wake_res is None:
+            for window_ms in (600, 1000, 1500):
+                try:
+                    dom = self._pipeline.dominant_doa(
+                        top_k_pct=30.0, window_ms=window_ms)
+                except Exception:
+                    dom = None
+                if dom is not None:
+                    candidates.append((f"dominant{window_ms}", dom))
+        else:
+            candidates.append(("wake_window", wake_res))
+
+        chosen = self._choose_wake_doa_candidate(candidates)
+        if chosen is not None:
+            source, mic_az_deg, norm_peak = chosen
+            body_az_deg = self._mic_to_body_az(float(mic_az_deg))
+            logging.getLogger(__name__).info(
+                "wake_doa_snapshot source=%s mic=%+0.1f° body=%+0.1f° "
+                "peak=%0.3f latest_mic=%s latest_body=%s offset=%+0.1f°",
+                source,
+                float(mic_az_deg),
+                body_az_deg,
+                float(norm_peak),
+                "n/a" if latest_mic is None else f"{latest_mic:+0.1f}°",
+                "n/a" if latest_body is None else f"{latest_body:+0.1f}°",
+                self.mic_yaw_offset_deg,
+            )
+            return body_az_deg
+        if candidates:
+            parts = []
+            for source, (mic_az_deg, norm_peak) in candidates:
+                parts.append(
+                    f"{source}:mic={float(mic_az_deg):+.1f}° "
+                    f"body={self._mic_to_body_az(float(mic_az_deg)):+.1f}° "
+                    f"peak={float(norm_peak):.3f}"
+                )
+            logging.getLogger(__name__).warning(
+                "wake_doa_snapshot rejected: %s; min_peak=%0.3f "
+                "mid_peak=%0.3f consensus=%0.1f°",
+                "; ".join(parts),
+                self.wake_doa_min_peak,
+                self.wake_doa_mid_peak,
+                self.wake_doa_consensus_deg,
+            )
             return None
+        # last resort: streaming snapshot
+        if latest_body is not None:
+            logging.getLogger(__name__).info(
+                "wake_doa_snapshot source=latest mic=%s body=%+0.1f° offset=%+0.1f°",
+                "n/a" if latest_mic is None else f"{latest_mic:+0.1f}°",
+                latest_body,
+                self.mic_yaw_offset_deg,
+            )
+            return latest_body
+        return None
+
+    def _choose_wake_doa_candidate(self, candidates):
+        """Pick a wake DOA candidate or return None when confidence is weak."""
+        parsed = []
+        for source, res in candidates:
+            mic_az_deg, norm_peak = res
+            parsed.append((source, float(mic_az_deg), float(norm_peak)))
+        if not parsed:
+            return None
+        best = max(parsed, key=lambda item: item[2])
+        if best[2] >= self.wake_doa_min_peak:
+            return best
+
+        mid = [item for item in parsed if item[2] >= self.wake_doa_mid_peak]
+        if len(mid) < 2:
+            return None
+
+        best_source, best_mic, best_peak = max(mid, key=lambda item: item[2])
+        best_body = self._mic_to_body_az(best_mic)
+        agree = []
+        for item in mid:
+            body = self._mic_to_body_az(item[1])
+            err = abs(self._wrap180(body - best_body))
+            if err <= self.wake_doa_consensus_deg:
+                agree.append(item)
+        if len(agree) >= 2:
+            return best_source, best_mic, best_peak
+        return None
 
     @property
     def denoiser_name(self) -> str:
@@ -331,6 +417,16 @@ class FarfieldAudioSource:
     def clear_target_azimuth(self) -> None:
         with self._dsp_lock:
             self._pipeline.clear_target_azimuth()
+
+    def enable_wake_spotter(self, on: bool) -> None:
+        """Pause/resume client-side KWS while keeping DSP and ASR audio alive."""
+        spotter = self._wake_spotter
+        if spotter is None:
+            return
+        try:
+            spotter.enable(bool(on))
+        except AttributeError:
+            return
 
     def notify_chassis_imu_yaw_delta_ccw_deg(self, delta_ccw_deg: float) -> None:
         """After chassis yaw changes (CCW-positive deg), retarget MVDR/DOA.

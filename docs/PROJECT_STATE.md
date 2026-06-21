@@ -14,12 +14,15 @@
 # openavatarchat-client.service  (WantedBy=gnome-session.target, 需图形自动登录 DISPLAY=:0)
 .venv/bin/python client/main.py --expression \
     --server ws://127.0.0.1:8282/ws/chat \
-    --camera-mode rgbd-sdk --camera orbbec \
+    --camera-mode color --camera /dev/video0 \
+    --camera-fps 30 --camera-disable-dynamic-framerate \
     --serial-port /dev/ttyAMA0 --tag-size 0.045 --calib-file config/camera_calib.json \
     --farfield --farfield-mic-yaw-offset-deg 30 \
     --wake-kws-keywords config/keywords.txt --wake-kws-threshold 0.25 \
     --wake-orient-min-deg 8 --wake-orient-deadzone-deg 5
 ```
+
+**本地开发环境注意**：不要复用根目录 `.venv/`。当前已拆成 `.venv-win/`（Windows PowerShell，Python 3.11.15，完整 `uv sync --locked`）和 `.venv-wsl/`（WSL，Python 3.11.15，用 `uv sync --locked --no-install-package pyaudio` 创建）。WSL 没有免密 sudo，暂未安装 `portaudio19-dev`，所以 `pyaudio` 被跳过；本地纯单测和视觉/控制逻辑测试可用 `.venv-wsl/bin/python`，需要真实音频输入时在车端或安装 WSL 系统依赖后再补 `pyaudio`。
 
 ## 2. 服务端实际覆盖：**handler 由 config 决定**（关键）
 
@@ -31,7 +34,7 @@ OpenAvatarChat 服务端**只加载 `config/chat_rpi_voice.yaml` 的 `handler_co
 | `WakeWord` | `wakeword/sherpa_kws/...` | ⚠️ `external_wake_only: true` → **不加载 KWS 模型、不在服务端解码**；只保留会话态、唤醒应答 TTS、告别、超时（15s）。KWS 实际在客户端做 |
 | `SileroVad` | `vad/silerovad/...` | ✅ |
 | `QwenASR` | `asr/qwen_asr/...` | ✅ 云端 `fun-asr-realtime`（DashScope） |
-| `LLMOpenAICompatible` | `llm/openai_compatible/...` | ✅ 云端 `qwen3.5-flash`，带视频输入，system_prompt=`config/system_prompt.txt` |
+| `LLMOpenAICompatible` | `llm/openai_compatible/...` | ✅ 云端 `qwen3.6-flash`，带视频输入，system_prompt=`config/system_prompt.txt` |
 | `QwenTTS` | `tts/qwen_tts/...` | ✅ 云端 `qwen3-tts-flash`，voice=Cherry |
 
 - **完全没被加载**（代码在仓库但当前部署不走）：`rtc_client`、`h5_rendering_client`(LAM)、`ros2_client`、`minicpm`、`qwen_omni`、`dify`、`sensevoice`、`bailian_tts`、`cosyvoice`。
@@ -52,6 +55,12 @@ OpenAvatarChat 服务端**只加载 `config/chat_rpi_voice.yaml` 的 `handler_co
 | 表情脸 | `--expression` → `expression_app.py` + `expression_player/`（Qt 全屏） | ✅ |
 | 聊天 | `chat_client.py` + `ws_audio_client.py` | ✅ |
 | Teach 调试 UI | `teach/server.py` + `teach_ui/`（FastAPI :8080） | ✅ |
+
+**RGB-D / RGB 相机状态（2026-06-21）**：更换 Orbbec USB 接线后曾恢复 `2bc5:0511` RGB 与 `2bc5:0614` depth/control 同时枚举，depth-only probe 与 SDK D2C probe 均通过；但后续实测 CPU YOLO-pose + 底盘运动 + 多外设负载下出现黑屏/断网风险，且当前 depth/control 枚举不稳定。因此当前默认部署回退到 `--camera-mode color --camera /dev/video0`，先保障前端 RGB 画面和 marker 跟随稳定。UVC RGB 默认显式请求 `--camera-fps 30`，使 OpenCV 走 MJPG，并加 `--camera-disable-dynamic-framerate`，保留自动曝光但禁止暗光长曝光把实际帧率降下来；Teach UI 摄像头流默认 `15fps`，服务端上限也是 `15fps`。若要重新实验 RGB-D 人体跟随，需显式 `--camera-mode rgbd-sdk --camera orbbec --person-follow`。
+
+**人体/marker 跟随默认值（2026-06-20）**：marker 跟随重新成为默认启用；RGB-D 说话人绑定/人体跟随代码保留但默认关闭，避免在 Pi 5 当前供电/算力余量下默认启动 CPU YOLO-pose。当前小车在桌上或低电量时，重启 marker-enabled client 仍属于可能触发底盘运动的操作，需确认 marker 不在视野或车体安全后再实测。
+
+**动作归位补偿（2026-06-21 车端验证通过）**：MotionPlayer 默认开启 `--motion-return`，真实 motion clip 播放时以动作起点为相对原点，用 MCU 编码器速度 + IMU yaw 做短时里程计；clip 正常结束或被 VAD/human_speech_start 中断后，立即进入低速 `returning` 阶段回到起点。PS2 接管、手动 Teach UI stop、telemetry stale、服务退出会停车并放弃自动归位。默认归位限速保持 `0.12 m/s`、`0.35 rad/s`，默认超时 `10s`；尾端使用 practical settle，默认约 `4cm/5deg` 内停车，避免几厘米/几度内来回摆动。车端验证：短动作 `happy` 连续 3 次 `reason=done`，尾端 settle 后单次约 `x=1.7cm,y=-3.5cm,yaw=0.9deg`；大动作 `scared` 在 10s 默认下 `reason=done`，从约 `x=-35.3cm,y=-15.2cm,yaw=-38.5deg` 回到约 `x=-0.6cm,y=-2.5cm,yaw=4.2deg`。第一版不依赖 RGB-D；深度相机视觉里程计只保留后续 backend 接口方向。
 
 **远场 DSP 实际链路**（`audio_frontend/dsp/`）：每路 mic 先 `aec.py`（**默认 Speex MDF**，auto 时；speexdsp 缺失才退 NLMS）→ `srp_phat.py` DOA → `mvdr.py` 波束 → **DNS 默认旁路** → 16kHz mono PCM。坐标系：DSP 全程 mic frame，与 body frame 差 `mic_yaw_offset_deg=+30°`。
 

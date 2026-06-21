@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
 
 _EXPR_HOLD_PADDING_MS = 500
+TELEMETRY_PREFIX = "[telemetry][action]"
 
 
 class ActionDispatcher:
@@ -55,7 +56,7 @@ class ActionDispatcher:
         if not names:
             return
         for name in names:
-            self._dispatch_one(name)
+            self._dispatch_one(name, phase=phase)
 
     def cancel_all(self) -> None:
         """用户 interrupt 时调用：清掉所有 pending motion 与 expression override。"""
@@ -81,7 +82,7 @@ class ActionDispatcher:
             out.append(name)
         return out
 
-    def _dispatch_one(self, name: str) -> None:
+    def _dispatch_one(self, name: str, phase: str = "before") -> None:
         with self._lock:
             if name == self._last_emotion:
                 # 相邻去重：相同情绪连发只触发一次。
@@ -108,6 +109,12 @@ class ActionDispatcher:
             self._expr.set_override(binding.expression_id, hold_ms=hold_ms)
 
         # 2. motion 入队（即使 clip 为 None 也要排一个占位 job，维持 motion_pending）
+        print(
+            f"{TELEMETRY_PREFIX} dispatch emotion={name} phase={phase} "
+            f"clip={binding.clip_id or 'empty'} expression={binding.expression_id or '-'} "
+            f"duration_ms={duration_ms} hold_ms={hold_ms}",
+            flush=True,
+        )
         def _on_done(emotion=name):
             # 队列清空后 MotionPlayer 自己会清 motion_pending；这里只清 last_emotion
             # 让下一次相同情绪能再触发。

@@ -27,10 +27,20 @@ ExecStartPre=/bin/sleep 5
 #                                  （和 --serial-port 一起生效；无串口时仅打印事件）
 # 关掉远场链路：去掉 --farfield 即可（其它参数会自动失效）。
 # 关掉旋转（保留 KWS+DSP）：再加 --no-wake-orient。
+# 默认使用 UVC RGB 路径，避免 Orbbec depth/control 枚举异常时影响前端画面。
+# 同时显式请求 30fps/MJPG，并关闭 UVC exposure_dynamic_framerate；
+# 这样保留自动曝光，但不允许暗光长曝光把实际帧率降下来。
+# Marker 跟随默认启用；关掉 marker 跟随可加 --no-marker-tracking。
+# RGB-D 说话人绑定/人体跟随默认关闭，因 CPU YOLO-pose + 底盘运动 + 多外设
+# 在当前 Pi 5 供电/算力余量下风险偏高；需要实验时改为
+#   --camera-mode rgbd-sdk --camera orbbec --person-follow
+# Motion clip 默认启用 IMU+编码器短时归位；调试原始动作可加 --no-motion-return。
 ExecStart=/home/USER/codes/OpenAvatarChat/.venv/bin/python client/main.py \
     --server ws://127.0.0.1:8282/ws/chat \
-    --camera-mode rgbd-sdk \
-    --camera orbbec \
+    --camera-mode color \
+    --camera /dev/video0 \
+    --camera-fps 30 \
+    --camera-disable-dynamic-framerate \
     --serial-port /dev/ttyAMA0 \
     --tag-size 0.045 \
     --calib-file config/camera_calib.json \

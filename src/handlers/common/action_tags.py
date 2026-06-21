@@ -28,6 +28,12 @@ from typing import Iterable, List, Sequence, Tuple
 
 EMOTION_TAGS = ("happy", "shy", "apologize", "scared")
 WHITELIST = frozenset(EMOTION_TAGS)
+TAG_ALIASES = {
+    # Qwen3.7 occasionally drops or swaps the "r" in [scared]. Keep aliases
+    # deliberately narrow so arbitrary bracketed text is still preserved.
+    "scaed": "scared",
+    "scaerd": "scared",
+}
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,7 @@ def extract_action_tags(text: str) -> Tuple[str, List[AnchoredTag]]:
             out_parts.append(chunk)
             out_len += len(chunk)
         key = m.group(1).lower()
+        key = TAG_ALIASES.get(key, key)
         if key in WHITELIST:
             tags.append(AnchoredTag(name=key, offset=out_len))
             # 命中白名单：剥掉，不写入 out_parts；out_len 不增加
@@ -236,6 +243,11 @@ def _self_test() -> None:
     clean, tags = extract_action_tags("【happy】你好")
     assert clean == "你好", clean
     assert tags == [AnchoredTag("happy", 0)], tags
+
+    # case 10: tolerate observed near-miss spelling from qwen3.7-plus
+    clean, tags = extract_action_tags("[scaed]啊，吓我一跳！")
+    assert clean == "啊，吓我一跳！", clean
+    assert tags == [AnchoredTag("scared", 0)], tags
 
     print("action_tags self-test ok")
 

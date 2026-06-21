@@ -1,0 +1,44 @@
+{"id":"happy_001","category":"happy","user_text":"小黑，刚才你转向我这一下很灵，做得不错。","visual_context":"","expected_tag":"happy","why":"clear praise for the robot should invite a happy response"}
+{"id":"happy_002","category":"happy","user_text":"我回来了，今天想先跟你聊一会儿。","visual_context":"","expected_tag":"happy","why":"warm reunion greeting"}
+{"id":"happy_003","category":"happy","user_text":"你终于跟上这个 marker 了，成功啦。","visual_context":"marker board is visible and centered","expected_tag":"happy","why":"shared success moment"}
+{"id":"happy_004","category":"happy","user_text":"你今天声音听起来挺精神的。","visual_context":"","expected_tag":"happy","why":"friendly compliment with positive tone"}
+{"id":"happy_005","category":"happy","user_text":"小黑，给我打个招呼吧。","visual_context":"","expected_tag":"happy","why":"greeting is naturally cheerful"}
+{"id":"happy_006","category":"happy","user_text":"我们刚刚把一个 bug 修好了。","visual_context":"","expected_tag":"happy","why":"celebrating a fix"}
+{"id":"happy_007","category":"happy","user_text":"你认出我了吗？我在镜头前挥手。","visual_context":"a familiar person is waving at the camera","expected_tag":"happy","why":"positive visual recognition prompt"}
+{"id":"happy_008","category":"happy","user_text":"今天你表现稳定，我挺满意的。","visual_context":"","expected_tag":"happy","why":"explicit satisfaction and praise"}
+{"id":"shy_001","category":"shy","user_text":"小黑，你怎么这么可爱啊。","visual_context":"","expected_tag":"shy","why":"appearance/personality compliment should be shy"}
+{"id":"shy_002","category":"shy","user_text":"你喜欢我吗？","visual_context":"","expected_tag":"shy","why":"direct affection question"}
+{"id":"shy_003","category":"shy","user_text":"如果我说我很喜欢你，你会不会不好意思？","visual_context":"","expected_tag":"shy","why":"explicit embarrassment/affection"}
+{"id":"shy_004","category":"shy","user_text":"你刚才看我的样子有点害羞。","visual_context":"","expected_tag":"shy","why":"user frames robot as shy"}
+{"id":"shy_005","category":"shy","user_text":"我给你拍张好看的照片，可以吗？","visual_context":"camera sees the user holding up a phone","expected_tag":"shy","why":"being photographed can be bashful"}
+{"id":"shy_006","category":"shy","user_text":"你今天这张小脸很漂亮。","visual_context":"","expected_tag":"shy","why":"direct cute/pretty compliment"}
+{"id":"shy_007","category":"shy","user_text":"来，跟我撒个娇。","visual_context":"","expected_tag":"shy","why":"cute intimate request"}
+{"id":"shy_008","category":"shy","user_text":"我刚刚夸你聪明，你是不是有点得意又不好意思？","visual_context":"","expected_tag":"shy","why":"explicit bashful tone"}
+{"id":"apologize_001","category":"apologize","user_text":"你刚才为什么撞到桌腿了？","visual_context":"","expected_tag":"apologize","why":"robot caused a collision"}
+{"id":"apologize_002","category":"apologize","user_text":"小黑，你刚刚差点冲到 marker 板上。","visual_context":"marker board is very close to the camera","expected_tag":"apologize","why":"robot unsafe motion should apologize"}
+{"id":"apologize_003","category":"apologize","user_text":"你没有听清我的问题，答偏了。","visual_context":"","expected_tag":"apologize","why":"assistant made a conversational mistake"}
+{"id":"apologize_004","category":"apologize","user_text":"你把我的脚碰了一下。","visual_context":"","expected_tag":"apologize","why":"physical bump by the robot"}
+{"id":"apologize_005","category":"apologize","user_text":"你刚才说错了，我问的是电池，不是相机。","visual_context":"","expected_tag":"apologize","why":"wrong answer correction"}
+{"id":"apologize_006","category":"apologize","user_text":"你挡住路了，往旁边让一下。","visual_context":"","expected_tag":"apologize","why":"robot inconvenience"}
+{"id":"apologize_007","category":"apologize","user_text":"刚才那段动作有点吓人，你应该慢一点。","visual_context":"","expected_tag":"apologize","why":"user criticizes robot behavior"}
+{"id":"apologize_008","category":"apologize","user_text":"你没有按我说的停下来。","visual_context":"","expected_tag":"apologize","why":"failure to follow instruction"}
+{"id":"scared_001","category":"scared","user_text":"喂！","visual_context":"","expected_tag":"scared","why":"sudden loud shout"}
+{"id":"scared_002","category":"scared","user_text":"砰！刚才外面好大一声。","visual_context":"","expected_tag":"scared","why":"sudden loud noise"}
+{"id":"scared_003","category":"scared","user_text":"你后面好像有东西在动。","visual_context":"a dark moving object appears behind the robot","expected_tag":"scared","why":"startling visual context"}
+{"id":"scared_004","category":"scared","user_text":"别动，前面有个台阶。","visual_context":"edge of a step is visible in front of the robot","expected_tag":"scared","why":"potential immediate hazard"}
+{"id":"scared_005","category":"scared","user_text":"刚才灯突然灭了。","visual_context":"the image is very dark","expected_tag":"scared","why":"sudden darkness"}
+{"id":"scared_006","category":"scared","user_text":"小心，marker 板快倒下来了。","visual_context":"marker board is tilted and close","expected_tag":"scared","why":"object falling near robot"}
+{"id":"scared_007","category":"scared","user_text":"我刚刚突然拍了一下桌子，吓到你了吗？","visual_context":"","expected_tag":"scared","why":"explicit scare prompt"}
+{"id":"scared_008","category":"scared","user_text":"前面有水，别开过去。","visual_context":"a wet reflective patch is on the floor","expected_tag":"scared","why":"risk warning"}
+{"id":"none_001","category":"none","user_text":"现在几点了？","visual_context":"","expected_tag":null,"why":"neutral factual query"}
+{"id":"none_002","category":"none","user_text":"解释一下 VAD 是怎么工作的。","visual_context":"","expected_tag":null,"why":"technical explanation should not force emotion"}
+{"id":"none_003","category":"none","user_text":"把你当前能做的事情简单列一下。","visual_context":"","expected_tag":null,"why":"neutral capability question"}
+{"id":"none_004","category":"none","user_text":"画面里有没有 marker？","visual_context":"no marker is visible; only floor and chair legs","expected_tag":null,"why":"visual question but neutral"}
+{"id":"none_005","category":"none","user_text":"你觉得这个房间光线够不够？","visual_context":"the room is dim but usable","expected_tag":null,"why":"visual assessment without strong emotion"}
+{"id":"none_006","category":"none","user_text":"向左转一点。","visual_context":"","expected_tag":null,"why":"plain command, no action tag needed"}
+{"id":"none_007","category":"none","user_text":"我有点累，你陪我安静一会儿。","visual_context":"","expected_tag":null,"why":"mild emotion but no strong matching tag"}
+{"id":"none_008","category":"none","user_text":"刚才网络有点慢，我们再试一次。","visual_context":"","expected_tag":null,"why":"minor issue not caused by robot behavior"}
+{"id":"none_009","category":"none","user_text":"你的电池现在大概多少伏？","visual_context":"","expected_tag":null,"why":"battery/status question"}
+{"id":"none_010","category":"none","user_text":"如果识别不到 marker，应该先停车还是继续预测？","visual_context":"","expected_tag":null,"why":"technical safety discussion"}
+{"id":"none_011","category":"none","user_text":"你看到桌子了吗？","visual_context":"a table is visible in the camera frame","expected_tag":null,"why":"neutral visual recognition"}
+{"id":"none_012","category":"none","user_text":"我刚才说话声音是不是太小了？","visual_context":"","expected_tag":null,"why":"audio diagnostic question"}

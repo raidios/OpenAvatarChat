@@ -265,7 +265,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         player = request.app.state.motion_player
         if player is None:
             raise HTTPException(status_code=503, detail="motion player not available")
-        player.stop_all()
+        player.stop_all(return_to_origin=False)
         return {"ok": True}
 
     @app.delete("/api/clips/{clip_id}")

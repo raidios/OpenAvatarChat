@@ -60,6 +60,27 @@ from opencv_gui import (
 )
 
 
+class _PauseGroup:
+    """Pause/resume multiple cmd_vel owners through the TrackingController API."""
+
+    def __init__(self, *controllers):
+        self._controllers = [c for c in controllers if c is not None]
+
+    def add(self, controller):
+        if controller is not None and controller not in self._controllers:
+            self._controllers.append(controller)
+
+    def pause(self):
+        for ctl in list(self._controllers):
+            if hasattr(ctl, "pause"):
+                ctl.pause()
+
+    def resume_from_pause(self):
+        for ctl in list(self._controllers):
+            if hasattr(ctl, "resume_from_pause"):
+                ctl.resume_from_pause()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Robot client: chat + ArUco marker tracking"
@@ -67,11 +88,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- camera --------------------------------------------------------------
     cam = parser.add_argument_group("Camera")
-    cam.add_argument("--camera-mode", type=str, default="rgbd-sdk",
+    cam.add_argument("--camera-mode", type=str, default="color",
                      choices=["rgbd-sdk", "color"],
                      help="Camera pipeline. rgbd-sdk uses Orbbec SDK color+depth "
                           "with hardware D2C; color keeps the legacy color-only "
-                          "V4L2/Orbbec path. Default: rgbd-sdk.")
+                          "V4L2/Orbbec path. Default: color.")
     cam.add_argument("--camera", type=str, default="auto",
                      help="Camera: 'auto' (first V4L2 capture-capable /dev/videoN, "
                           "else Orbbec SDK if lib present), 'orbbec' (Gemini Pro SDK "
@@ -205,11 +226,33 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Cap rotation speed in rad/s (default 2.5).")
     wo.add_argument("--wake-orient-timeout", type=float, default=6.0,
                     help="Hard timeout per rotation in seconds (default 6).")
+    wo.add_argument("--wake-orient-doa-to-yaw-sign", type=str,
+                    choices=["normal", "inverted"], default="normal",
+                    help="Map wake DOA to IMU yaw delta. 'normal' keeps the "
+                         "historical conversion delta=-DOA; 'inverted' uses "
+                         "delta=+DOA for sign calibration tests.")
+    wo.add_argument("--wake-doa-min-peak", type=float, default=1.20,
+                    help="High-confidence SRP peak/mean threshold for a "
+                         "single wake DOA snapshot to drive chassis rotation "
+                         "(default 1.20).")
+    wo.add_argument("--wake-doa-mid-peak", type=float, default=1.10,
+                    help="Mid-confidence SRP peak/mean threshold. Candidates "
+                         "between mid and high only drive rotation when "
+                         "multiple recent windows agree (default 1.10).")
+    wo.add_argument("--wake-doa-consensus-deg", type=float, default=45.0,
+                    help="Maximum body-angle spread for mid-confidence wake "
+                         "DOA consensus across recent windows (default 45).")
 
     # -- tracking ------------------------------------------------------------
     trk = parser.add_argument_group("Marker tracking (OpenCV ArUco)")
+    trk.add_argument("--marker-tracking", dest="marker_tracking",
+                     action="store_true", default=True,
+                     help="Enable marker-board following (default).")
+    trk.add_argument("--no-marker-tracking", dest="marker_tracking",
+                     action="store_false",
+                     help="Disable marker-board following.")
     trk.add_argument("--no-tracking", action="store_true",
-                     help="Disable marker tracking")
+                     help="Legacy alias: keep marker tracking disabled")
     trk.add_argument("--tag-size", type=float, default=0.045,
                      help="ACTUAL printed tag edge length in metres "
                           "(default: 0.045 = 45 mm, matches generate_aruco.py --size 45)")
@@ -245,6 +288,26 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Velocity multiplier while following predicted board "
                           "poses (default: 0.5)")
 
+    # -- person following ----------------------------------------------------
+    person = parser.add_argument_group("Person following (RGB-D)")
+    person.add_argument("--person-follow", dest="person_follow",
+                        action="store_true", default=False,
+                        help="Enable wake-driven RGB-D speaker binding and "
+                             "person following. Requires --camera-mode rgbd-sdk.")
+    person.add_argument("--no-person-follow", dest="person_follow",
+                        action="store_false",
+                        help="Disable wake-driven RGB-D speaker binding and "
+                             "person following (default).")
+    person.add_argument("--person-follow-max-fps", type=float, default=5.0,
+                        help="Pose/RGB-D perception rate cap (default: 5 Hz).")
+    person.add_argument("--person-follow-lost-timeout", type=float, default=0.8,
+                        help="Seconds to tolerate losing the bound owner before "
+                             "stopping and returning to IDLE (default: 0.8).")
+    person.add_argument("--person-follow-max-distance", type=float, default=3.0,
+                        help="Maximum valid RGB-D person-follow distance in "
+                             "metres (default: 3.0). Marker following keeps "
+                             "its own shorter range.")
+
     # -- serial --------------------------------------------------------------
     ser = parser.add_argument_group("Serial (MCU)")
     ser.add_argument("--serial-port", type=str, default=None,
@@ -274,6 +337,26 @@ def build_parser() -> argparse.ArgumentParser:
     teach.add_argument("--calib-output", type=str, default="config/camera_calib.json",
                        help="Path the teach UI writes calibration result to "
                             "(default: config/camera_calib.json)")
+    teach.add_argument("--motion-return", dest="motion_return",
+                       action="store_true", default=True,
+                       help="Return to the motion start pose after real clips "
+                            "finish or are interrupted (default).")
+    teach.add_argument("--no-motion-return", dest="motion_return",
+                       action="store_false",
+                       help="Disable automatic return-to-start after motion clips.")
+    teach.add_argument("--motion-return-max-linear-speed", type=float, default=0.12,
+                       help="Maximum return linear speed in m/s (default: 0.12).")
+    teach.add_argument("--motion-return-max-angular-speed", type=float, default=0.35,
+                       help="Maximum return angular speed in rad/s (default: 0.35).")
+    teach.add_argument("--motion-return-position-tolerance", type=float, default=0.03,
+                       help="Return position tolerance in metres (default: 0.03).")
+    teach.add_argument("--motion-return-yaw-tolerance-deg", type=float, default=3.0,
+                       help="Return yaw tolerance in degrees (default: 3).")
+    teach.add_argument("--motion-return-timeout", type=float, default=10.0,
+                       help="Maximum return duration in seconds (default: 10).")
+    teach.add_argument("--motion-return-stale-timeout", type=float, default=0.3,
+                       help="Abort return if MCU telemetry is stale for this many "
+                            "seconds (default: 0.3).")
 
     # -- debug display -------------------------------------------------------
     dbg = parser.add_argument_group("Debug display")
@@ -487,7 +570,8 @@ async def run(
 
     need_camera = (
         (not args.no_chat and not args.no_video)
-        or (not args.no_tracking)
+        or (bool(args.marker_tracking and not args.no_tracking))
+        or bool(args.person_follow)
         or args.display
     )
 
@@ -544,7 +628,8 @@ async def run(
     # -- apriltag tracker ----------------------------------------------------
     tag_tracker = None
     tracking_ctl = None
-    if not args.no_tracking and camera is not None:
+    marker_tracking_enabled = bool(args.marker_tracking and not args.no_tracking)
+    if marker_tracking_enabled and camera is not None:
         from apriltag_tracker import AprilTagTracker
         tag_tracker = AprilTagTracker(
             camera=camera,
@@ -579,10 +664,65 @@ async def run(
             tracking_ctl.start()
         else:
             print("[main] No serial port -- tracking is vision-only (no motor control)")
+    elif not args.no_tracking:
+        print("[main] Marker tracking disabled by --no-marker-tracking.")
+
+    # -- person perception / following --------------------------------------
+    person_perception = None
+    person_follow_ctl = None
+    pause_group = _PauseGroup(tracking_ctl)
+    if args.person_follow:
+        if camera is None or not getattr(camera, "is_opened", False):
+            print("[person] person_tracking_disabled reason=camera_unavailable")
+        else:
+            try:
+                from person_follow import (
+                    PersonFollowController,
+                    PersonPerception,
+                    PersonPerceptionParams,
+                )
+                from tracking_controller import TrackingParams
+                person_params = PersonPerceptionParams(
+                    max_fps=float(args.person_follow_max_fps),
+                    min_bind_distance=TrackingParams().min_valid_distance,
+                    max_bind_distance=float(args.person_follow_max_distance),
+                )
+                person_perception = PersonPerception(
+                    camera=camera,
+                    params=person_params,
+                    calib_file=args.calib_file,
+                    start_thread=False,
+                )
+                if serial_conn is not None:
+                    person_follow_ctl = PersonFollowController(
+                        perception=person_perception,
+                        serial=serial_conn,
+                        params=TrackingParams(
+                            tracking_distance=args.tracking_distance,
+                            board_tag_size=args.tag_size,
+                            board_gap=args.marker_board_gap,
+                            board_lost_timeout=args.marker_board_lost_timeout,
+                            board_smoothing_alpha=args.marker_board_smoothing_alpha,
+                            board_min_visible_tags=args.marker_board_min_visible_tags,
+                            board_prediction_timeout=args.marker_board_prediction_timeout,
+                            predicted_speed_scale=args.tracking_predicted_speed_scale,
+                            max_valid_distance=float(args.person_follow_max_distance),
+                        ),
+                        lost_timeout_s=float(args.person_follow_lost_timeout),
+                        perception_max_fps=float(args.person_follow_max_fps),
+                    )
+                    person_follow_ctl.start()
+                    pause_group.add(person_follow_ctl)
+                else:
+                    print("[person] No serial port -- perception only (no motor control)")
+            except Exception as exc:
+                print(f"[person] init failed: {exc}; person following disabled.")
 
     if output_refs is not None:
         output_refs["tag_tracker"] = tag_tracker
         output_refs["tracking_ctl"] = tracking_ctl
+        output_refs["person_perception"] = person_perception
+        output_refs["person_follow_ctl"] = person_follow_ctl
         output_refs["serial_conn"] = serial_conn
         output_refs["camera"] = camera
 
@@ -635,6 +775,8 @@ async def run(
             if "SELECT" in pressed:
                 if tracking_ctl is not None:
                     tracking_ctl.emergency_stop()
+                if person_follow_ctl is not None:
+                    person_follow_ctl.emergency_stop()
                 serial_conn.send_velocity(0, 0, 0)
                 print("[main] E-STOP triggered by PS2 SELECT")
 
@@ -643,6 +785,9 @@ async def run(
                 if tracking_ctl is not None and tracking_ctl.is_estopped:
                     tracking_ctl.resume()
                     print("[main] Tracking resumed by PS2 START")
+                if person_follow_ctl is not None:
+                    person_follow_ctl.reset_estop()
+                    print("[main] Person following resumed by PS2 START")
 
         serial_conn.on_ps2_change(_on_ps2_change)
 
@@ -683,6 +828,7 @@ async def run(
         from teach.clip_store import ClipStore
         from teach.motion_recorder import MotionRecorder
         from teach.motion_player import MotionPlayer
+        from teach.motion_odometry import MotionReturnParams
         from teach.action_registry import ActionRegistry
         from action_dispatcher import ActionDispatcher
 
@@ -695,8 +841,17 @@ async def run(
         motion_recorder.start_thread()
         motion_player = MotionPlayer(
             serial=serial_conn,
-            tracking_ctl=tracking_ctl,
+            tracking_ctl=pause_group,
             player_set_pending=None,  # 等 chat_client 起来后再 wire
+            motion_return_enabled=bool(args.motion_return),
+            motion_return_params=MotionReturnParams(
+                max_linear_speed=float(args.motion_return_max_linear_speed),
+                max_angular_speed=float(args.motion_return_max_angular_speed),
+                position_tolerance_m=float(args.motion_return_position_tolerance),
+                yaw_tolerance_rad=math.radians(float(args.motion_return_yaw_tolerance_deg)),
+                timeout_s=float(args.motion_return_timeout),
+                stale_timeout_s=float(args.motion_return_stale_timeout),
+            ),
         )
         motion_player.start_thread()
         action_dispatcher = ActionDispatcher(
@@ -751,8 +906,15 @@ async def run(
                 mic_yaw_offset_deg=args.farfield_mic_yaw_offset_deg,
                 auto_start_audio_server=not args.farfield_no_board_bootstrap,
                 wake_spotter=wake_spotter,
+                wake_doa_min_peak=float(args.wake_doa_min_peak),
+                wake_doa_mid_peak=float(args.wake_doa_mid_peak),
+                wake_doa_consensus_deg=float(args.wake_doa_consensus_deg),
             )
             farfield_source.open()
+            if motion_player is not None:
+                motion_player.set_yaw_delta_callback(
+                    farfield_source.notify_chassis_imu_yaw_delta_ccw_deg
+                )
             print(
                 f"[main] far-field audio source up: {args.farfield_host}:"
                 f"{args.farfield_port} aec={args.farfield_aec} "
@@ -804,13 +966,17 @@ async def run(
                     angle_deadzone_deg=float(args.wake_orient_deadzone_deg),
                     max_duration_s=float(args.wake_orient_timeout),
                     min_doa_deg=float(args.wake_orient_min_deg),
+                    doa_to_yaw_sign=(
+                        1.0 if args.wake_orient_doa_to_yaw_sign == "inverted"
+                        else -1.0
+                    ),
                 )
                 def _on_wake_complete(
                     kw,
                     req,
                     ach,
                     _serial=serial_conn,
-                    _ff=farfield_source,
+                    _person_follow=person_follow_ctl,
                 ):
                     # Print the post-rotation IMU yaw too so the operator
                     # can sanity-check the closed-loop directly.
@@ -819,13 +985,22 @@ async def run(
                         f"achieved {ach:+0.1f}°  "
                         f"(yaw_now={_serial.yaw_deg:+.1f}°)"
                     )
+                    if _person_follow is not None:
+                        try:
+                            target = _person_follow.bind_after_wake()
+                            if target is None:
+                                print("[person] wake bind failed; staying idle")
+                        except Exception as e:
+                            print(f"[person] wake bind error: {e}")
+
+                def _on_wake_yaw_delta(delta_ccw_deg, _ff=farfield_source):
                     # Mic ring is rigid on the chassis: rotate MVDR / DOA by
-                    # −Δyaw (CCW-positive IMU) so the beam stays on the
-                    # world-fixed talker after wake-orient.
-                    if _ff is not None and abs(float(ach)) >= 0.5:
+                    # the measured IMU yaw increment so the beam stays on the
+                    # world-fixed talker during wake-orient, not only after it.
+                    if _ff is not None:
                         try:
                             _ff.notify_chassis_imu_yaw_delta_ccw_deg(
-                                float(ach))
+                                float(delta_ccw_deg))
                         except Exception as e:
                             print(
                                 f"[main] farfield BF yaw notify failed: {e}"
@@ -834,8 +1009,9 @@ async def run(
                 wake_orient_ctl = WakeOrientController(
                     serial=serial_conn,
                     params=params,
-                    tracking_ctl=tracking_ctl,
+                    tracking_ctl=pause_group,
                     on_complete=_on_wake_complete,
+                    on_yaw_delta=_on_wake_yaw_delta,
                 )
                 wake_orient_ctl.start()
                 output_refs["_wake_inner"] = wake_orient_ctl.on_wake
@@ -898,6 +1074,10 @@ async def run(
         chat_client = ChatClient(
             on_action_tag=(
                 (lambda tags, phase, _d=action_dispatcher: _d.dispatch(tags, phase=phase))
+                if action_dispatcher is not None else None
+            ),
+            on_human_speech_start=(
+                (lambda _d=action_dispatcher: _d.cancel_all())
                 if action_dispatcher is not None else None
             ),
             audio_source=farfield_source,
@@ -1010,6 +1190,10 @@ async def run(
     # queue and writes one final zero-velocity frame).
     if wake_orient_ctl is not None:
         wake_orient_ctl.stop()
+    if person_follow_ctl is not None:
+        person_follow_ctl.stop()
+    if person_perception is not None:
+        person_perception.stop()
     if tracking_ctl is not None:
         tracking_ctl.stop()
     if tag_tracker is not None:

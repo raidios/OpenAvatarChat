@@ -10,9 +10,8 @@ Provides AudioPlayer + async coroutines that the main event loop composes.
 * ``play_chunk()`` 命中 marker 时调用注入的回调（``ActionDispatcher.dispatch``），
   实现"播放到该数据包时触发动作"的语义。
 * 引入 ``set_motion_pending()``：MotionPlayer 起播 clip 时置 ``True``、结束置
-  ``False``；``playback_done_event`` 必须等"音频播完 + audio_end 收齐 + 无
-  motion 在跑"三者同时成立才 set，这样服务端 wake-session 的 ``enable_vad``
-  会正确推迟到动作也结束之后。
+  ``False``，仅用于 telemetry。``playback_done_event`` 只表达语音播放完成；
+  动作独立播放，新的用户语音会中止动作。
 * 暴露 ``MicMonitor``：把 mic 采集到的 raw int16 PCM 副本扔进 asyncio.Queue
   ，供 teach server ``/ws/mic`` 推到浏览器做实时监听；mute 期间分流到监听的
   是 raw（mute 前），而上行到 chat 服务端的是置零的 SILENCE_FRAME，互不影响。
@@ -20,6 +19,7 @@ Provides AudioPlayer + async coroutines that the main event loop composes.
 
 import asyncio
 import json
+import math
 import time
 import threading
 from collections import deque
@@ -50,6 +50,7 @@ MUTE_TAIL_SEC = 0.3
 FADE_IN_SAMPLES = 480  # 20 ms at 24 kHz
 
 SILENCE_FRAME = bytes(MIC_CHUNK * 2)
+TELEMETRY_PREFIX = "[telemetry][chat]"
 
 
 # 回调签名：tags 形如 [{"name": "happy"}, ...]；phase 是 "before" / "after"。
@@ -132,8 +133,16 @@ class AudioPlayer:
         self.mute_until: float = 0.0
         self._need_fade_in = False
         self._on_marker = on_marker
-        # MotionPlayer 起播/结束时翻转；为 True 时 playback_done_event 不会 set。
+        # MotionPlayer 起播/结束时翻转；仅用于 telemetry，不阻塞 playback_done。
         self._motion_pending = False
+        self._playback_seq = 0
+        self._playback_id = "idle"
+        self._playback_started_at: Optional[float] = None
+        self._last_audio_at: Optional[float] = None
+        self._audio_frames = 0
+        self._audio_bytes = 0
+        self._markers_seen = 0
+        self._end_received_at: Optional[float] = None
 
     @property
     def mic_should_mute(self) -> bool:
@@ -149,8 +158,22 @@ class AudioPlayer:
         with self.lock:
             if not self.is_playing:
                 self._need_fade_in = True
+                self._start_playback_locked()
             self.buffer.append(("audio", pcm_bytes))
             self.is_playing = True
+            self._last_audio_at = time.monotonic()
+            self._audio_frames += 1
+            self._audio_bytes += len(pcm_bytes)
+            playback_id = self._playback_id
+            queue_len = len(self.buffer)
+            frames = self._audio_frames
+            audio_ms = self._audio_bytes / (SPEAKER_RATE * SPEAKER_CHANNELS * 2) * 1000.0
+        if frames == 1 or frames % 50 == 0:
+            print(
+                f"{TELEMETRY_PREFIX} audio_enqueue id={playback_id} "
+                f"frames={frames} queued={queue_len} audio_ms={audio_ms:.0f}",
+                flush=True,
+            )
 
     # 兼容旧名（其它代码可能引用），等价 enqueue_audio。
     enqueue = enqueue_audio
@@ -158,6 +181,17 @@ class AudioPlayer:
     def enqueue_marker(self, payload: dict) -> None:
         with self.lock:
             self.buffer.append(("marker", payload))
+            self._markers_seen += 1
+            playback_id = self._playback_id
+            queue_len = len(self.buffer)
+            markers = self._markers_seen
+        tags = payload.get("tags") or payload.get("tail_action_tags") or []
+        names = ",".join(str(t.get("name", t)) for t in tags if isinstance(t, dict)) or "-"
+        print(
+            f"{TELEMETRY_PREFIX} marker_enqueue id={playback_id} "
+            f"markers={markers} queued={queue_len} phase={payload.get('phase', '-')} tags={names}",
+            flush=True,
+        )
 
     def clear(self) -> None:
         with self.lock:
@@ -165,17 +199,78 @@ class AudioPlayer:
             self.audio_end_received = False
             self.is_playing = False
             self._need_fade_in = False
+            playback_id = self._playback_id
+            self._reset_playback_stats_locked()
         # 中断时同步重置 done event；motion_pending 由 dispatcher 在 motion 取消时清。
         self.playback_done_event.clear()
+        print(f"{TELEMETRY_PREFIX} playback_clear id={playback_id}", flush=True)
 
     def mark_audio_end(self) -> None:
         with self.lock:
             self.audio_end_received = True
+            self._end_received_at = time.monotonic()
+            playback_id = self._playback_id
+            queue_len = len(self.buffer)
+            frames = self._audio_frames
+            audio_ms = self._audio_bytes / (SPEAKER_RATE * SPEAKER_CHANNELS * 2) * 1000.0
+        print(
+            f"{TELEMETRY_PREFIX} audio_end id={playback_id} "
+            f"queued={queue_len} frames={frames} audio_ms={audio_ms:.0f}",
+            flush=True,
+        )
 
     def set_motion_pending(self, active: bool) -> None:
         """MotionPlayer 起播/结束时调用。控制 playback_done_event 是否可以触发。"""
         with self.lock:
+            old = self._motion_pending
             self._motion_pending = bool(active)
+            playback_id = self._playback_id
+            queue_len = len(self.buffer)
+            is_playing = self.is_playing
+        if old != bool(active):
+            print(
+                f"{TELEMETRY_PREFIX} motion_pending id={playback_id} "
+                f"active={bool(active)} queued={queue_len} is_playing={is_playing}",
+                flush=True,
+            )
+
+    def _start_playback_locked(self) -> None:
+        self._playback_seq += 1
+        self._playback_id = f"pb{self._playback_seq:06d}"
+        now = time.monotonic()
+        self._playback_started_at = now
+        self._last_audio_at = None
+        self._audio_frames = 0
+        self._audio_bytes = 0
+        self._markers_seen = 0
+        self._end_received_at = None
+        print(f"{TELEMETRY_PREFIX} playback_start id={self._playback_id}", flush=True)
+
+    def _reset_playback_stats_locked(self) -> None:
+        self._playback_id = "idle"
+        self._playback_started_at = None
+        self._last_audio_at = None
+        self._audio_frames = 0
+        self._audio_bytes = 0
+        self._markers_seen = 0
+        self._end_received_at = None
+
+    def _finish_playback_locked(self) -> dict:
+        now = time.monotonic()
+        playback_id = self._playback_id
+        started = self._playback_started_at
+        end_received = self._end_received_at
+        audio_ms = self._audio_bytes / (SPEAKER_RATE * SPEAKER_CHANNELS * 2) * 1000.0
+        stats = {
+            "id": playback_id,
+            "wall_ms": (now - started) * 1000.0 if started is not None else math.nan,
+            "after_audio_end_ms": (now - end_received) * 1000.0 if end_received is not None else math.nan,
+            "frames": self._audio_frames,
+            "audio_ms": audio_ms,
+            "markers": self._markers_seen,
+        }
+        self._reset_playback_stats_locked()
+        return stats
 
     # ------------------------------------------------------------------
     # consumer side (called from audio_playback task)
@@ -189,14 +284,20 @@ class AudioPlayer:
         """
         with self.lock:
             if not self.buffer:
-                if (
-                    self.audio_end_received
-                    and not self._motion_pending
-                ):
+                if self.audio_end_received:
+                    stats = self._finish_playback_locked()
                     self.audio_end_received = False
                     self.is_playing = False
                     self.mute_until = time.monotonic() + MUTE_TAIL_SEC
                     self.playback_done_event.set()
+                    print(
+                        f"{TELEMETRY_PREFIX} playback_done "
+                        f"id={stats['id']} wall_ms={stats['wall_ms']:.0f} "
+                        f"after_audio_end_ms={stats['after_audio_end_ms']:.0f} "
+                        f"audio_ms={stats['audio_ms']:.0f} frames={stats['frames']} "
+                        f"markers={stats['markers']} mute_tail_ms={MUTE_TAIL_SEC * 1000:.0f}",
+                        flush=True,
+                    )
                 return False
             kind, payload = self.buffer.popleft()
             apply_fade = False
@@ -272,6 +373,11 @@ async def mic_sender(
             data = await loop.run_in_executor(None, stream.read, MIC_CHUNK, False)
             mute = player.mic_should_mute
             if mute != last_mute:
+                if hasattr(stream, "enable_wake_spotter"):
+                    try:
+                        stream.enable_wake_spotter(not mute)
+                    except Exception as e:
+                        print(f"[mic] wake_spotter gate error: {e}", flush=True)
                 print(
                     f"[mic] mute={mute} is_playing={player.is_playing} "
                     f"mute_until_in={player.mute_until - time.monotonic():.2f}s",
@@ -356,6 +462,7 @@ async def ws_receiver(
     ws,
     player: AudioPlayer,
     stop_event: asyncio.Event,
+    on_server_json: Optional[Callable[[dict, Any], bool]] = None,
     expression_ui=None,
 ):
     try:
@@ -374,19 +481,24 @@ async def ws_receiver(
                     data = json.loads(message)
                     if expression_ui is not None:
                         expression_ui.on_ws_json(data)
-                    msg_type = data.get("type")
-                    if msg_type == "session_started":
-                        print(f"[session] Connected: {data.get('session_id')}")
-                    elif msg_type == "asr_text":
-                        print(f"[ASR] {data.get('text', '')}")
-                    elif msg_type == "llm_text":
-                        print(f"[LLM] {data.get('text', '')}", end="", flush=True)
-                    elif msg_type == "audio_end":
-                        player.mark_audio_end()
-                    elif msg_type == "action_tag":
-                        # 与 audio 同源同序进同一队列，由 play_chunk 在出队时
-                        # 触发回调。payload 形如 {"tags": [...], "phase": "before"}。
-                        player.enqueue_marker(data)
+                    handled = (
+                        on_server_json(data, player)
+                        if on_server_json is not None else False
+                    )
+                    if not handled:
+                        msg_type = data.get("type")
+                        if msg_type == "session_started":
+                            print(f"[session] Connected: {data.get('session_id')}")
+                        elif msg_type == "asr_text":
+                            print(f"[ASR] {data.get('text', '')}")
+                        elif msg_type == "llm_text":
+                            print(f"[LLM] {data.get('text', '')}", end="", flush=True)
+                        elif msg_type == "audio_end":
+                            player.mark_audio_end()
+                        elif msg_type == "action_tag":
+                            # 与 audio 同源同序进同一队列，由 play_chunk 在出队时
+                            # 触发回调。payload 形如 {"tags": [...], "phase": "before"}。
+                            player.enqueue_marker(data)
                 except json.JSONDecodeError:
                     pass
     except websockets.exceptions.ConnectionClosed:
@@ -421,6 +533,7 @@ async def playback_notifier(
         print("\n[TTS] Playback complete, notifying server")
         try:
             await ws.send(json.dumps({"type": "playback_complete"}))
+            print(f"{TELEMETRY_PREFIX} playback_complete_sent", flush=True)
         except Exception as e:
             if not stop_event.is_set():
                 print(f"[playback_notifier] Error: {e}")
@@ -432,10 +545,12 @@ class ChatClient:
     def __init__(
         self,
         on_action_tag: Optional[ActionTagCallback] = None,
+        on_human_speech_start: Optional[Callable[[], None]] = None,
         audio_source: Optional[Any] = None,
     ):
         self.pa_instance = pyaudio.PyAudio()
         self._on_action_tag = on_action_tag
+        self._on_human_speech_start = on_human_speech_start
         # 由 AudioPlayer 的 marker 回调转发：把 payload 拆成 tags + phase 后向上派发。
         self.player = AudioPlayer(on_marker=self._dispatch_marker)
         self.mic_monitor = MicMonitor()
@@ -463,6 +578,44 @@ class ChatClient:
     def set_action_tag_callback(self, cb: Optional[ActionTagCallback]) -> None:
         """允许在 ChatClient 构造之后再挂载回调（main.py 里 dispatcher 晚于 ChatClient 起来时用）。"""
         self._on_action_tag = cb
+
+    def set_human_speech_start_callback(self, cb: Optional[Callable[[], None]]) -> None:
+        self._on_human_speech_start = cb
+
+    def _notify_human_speech_start(self) -> None:
+        cb = self._on_human_speech_start
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception as e:
+            print(f"[chat_client] on_human_speech_start error: {e}", flush=True)
+
+    def handle_server_json(self, data: dict, player: Optional[AudioPlayer]) -> bool:
+        msg_type = data.get("type")
+        if msg_type == "session_started":
+            print(f"[session] Connected: {data.get('session_id')}")
+            return True
+        if msg_type == "human_speech_start":
+            print("[ASR] human speech start", flush=True)
+            self._notify_human_speech_start()
+            return True
+        if msg_type == "asr_text":
+            self._notify_human_speech_start()
+            print(f"[ASR] {data.get('text', '')}")
+            return True
+        if msg_type == "llm_text":
+            print(f"[LLM] {data.get('text', '')}", end="", flush=True)
+            return True
+        if msg_type == "audio_end":
+            if player is not None:
+                player.mark_audio_end()
+            return True
+        if msg_type == "action_tag":
+            if player is not None:
+                player.enqueue_marker(data)
+            return True
+        return False
 
     async def run(
         self,
@@ -492,7 +645,11 @@ class ChatClient:
                         )
                     ),
                     asyncio.create_task(
-                        ws_receiver(ws, self.player, stop_event, expression_ui)
+                        ws_receiver(
+                            ws, self.player, stop_event,
+                            on_server_json=self.handle_server_json,
+                            expression_ui=expression_ui,
+                        )
                     ),
                     asyncio.create_task(
                         audio_playback(self.player, stop_event)

@@ -32,6 +32,7 @@ class WakeWordConfig(HandlerBaseConfigModel, BaseModel):
     tts_model_name: str = Field(default="qwen3-tts-flash")
     tts_voice: str = Field(default="Cherry")
     tts_sample_rate: int = Field(default=24000)
+    wake_reply_failsafe_extra_s: float = Field(default=3.0)
     # Same as QwenTTS; WakeWord loads earlier in yaml so we must set dashscope explicitly.
     api_key: Optional[str] = Field(default=None)
     # When True, do NOT run KWS on the incoming MIC_AUDIO stream; rely on
@@ -113,6 +114,47 @@ class HandlerWakeWord(HandlerBase, ABC):
         """Use dashscope TTS to pre-generate audio for a text prompt."""
         self._ensure_dashscope_api_key()
         try:
+            if (self.config.tts_model_name or "").lower().startswith("cosyvoice-"):
+                from dashscope.audio.tts_v2 import AudioFormat, ResultCallback, SpeechSynthesizer
+
+                chunks = []
+                done_event = threading.Event()
+                error_holder: List[Optional[str]] = [None]
+
+                class WakeTTSCallback(ResultCallback):
+                    def on_data(self, data: bytes) -> None:
+                        if data:
+                            audio_int16 = np.frombuffer(data, dtype=np.int16)
+                            if audio_int16.size:
+                                chunks.append(audio_int16.astype(np.float32) / 32767.0)
+
+                    def on_complete(self) -> None:
+                        done_event.set()
+
+                    def on_error(self, message) -> None:
+                        error_holder[0] = str(message)
+                        done_event.set()
+
+                    def on_close(self) -> None:
+                        done_event.set()
+
+                synthesizer = SpeechSynthesizer(
+                    model=self.config.tts_model_name,
+                    voice=self.config.tts_voice,
+                    callback=WakeTTSCallback(),
+                    format=AudioFormat.PCM_24000HZ_MONO_16BIT,
+                )
+                synthesizer.streaming_call(text)
+                synthesizer.streaming_complete()
+                completed = done_event.wait(timeout=30)
+                if not completed:
+                    logger.error(f"Wake TTS timeout for model={self.config.tts_model_name}")
+                if error_holder[0]:
+                    logger.error(f"Wake TTS error: {error_holder[0]}")
+                if chunks:
+                    return np.concatenate(chunks)
+                return None
+
             from dashscope import MultiModalConversation
             responses = MultiModalConversation.call(
                 model=self.config.tts_model_name,
@@ -180,7 +222,7 @@ class HandlerWakeWord(HandlerBase, ABC):
         delay = (
             len(self.wake_audio) / float(self.config.tts_sample_rate)
             + 0.35
-            + 0.6
+            + float(self.config.wake_reply_failsafe_extra_s)
         )
 
         def _on_timeout() -> None:

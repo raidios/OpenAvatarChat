@@ -245,6 +245,14 @@ def main() -> int:
         print(f"[A] Speex(raw ch0 + ref)             ERLE = {e_a:+.1f} dB")
         write_wav(out_dir / "out_A_speex_raw.wav", out_a)
 
+        print("[*] Speex filter-length sweep (raw ch0 + ch6/7 ref):")
+        for ms in [20, 30, 50, 70, 100, 150, 200, 300]:
+            c = AecConfig(filter_length_samples=ms * 16)
+            ec = SpeexAec(c)
+            o = run_aec(near0, ref, ec)
+            e = erle_db(near0, o)
+            print(f"   filter={ms:>4d}ms   ERLE={e:+5.1f} dB")
+
     out_b = run_aec(near0, ref, nlms_b)
     e_b = erle_db(near0, out_b)
     print(f"[B] NLMS (raw ch0 + ref)             ERLE = {e_b:+.1f} dB")

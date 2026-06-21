@@ -68,6 +68,8 @@ logger = logging.getLogger(__name__)
 
 WakeCompleteCallback = Callable[[str, float, float], None]
 # (keyword, requested_delta_deg, achieved_delta_deg)
+WakeYawDeltaCallback = Callable[[float], None]
+# incremental IMU yaw delta in degrees, CCW-positive
 
 
 @dataclass
@@ -81,6 +83,7 @@ class WakeOrientParams:
     max_duration_s: float = 6.0            # hard timeout per rotation
     min_doa_deg: float = 8.0               # don't rotate for tiny offsets
     cooldown_s: float = 1.5                # ignore retriggers during rotation
+    doa_to_yaw_sign: float = -1.0          # -1 keeps historical CW->CCW flip
     overshoot_brake_dps: float = 1.0       # mrad/s mapped from m/s
     # ^ above we don't actually use this; provided for future tuning
 
@@ -97,11 +100,13 @@ class WakeOrientController:
         params: Optional[WakeOrientParams] = None,
         tracking_ctl: Optional["TrackingController"] = None,
         on_complete: Optional[WakeCompleteCallback] = None,
+        on_yaw_delta: Optional[WakeYawDeltaCallback] = None,
     ):
         self._serial = serial
         self._tracking_ctl = tracking_ctl
         self._params = params or WakeOrientParams()
         self._on_complete = on_complete
+        self._on_yaw_delta = on_yaw_delta
 
         self._goal_lock = threading.Lock()
         self._pending_goal: Optional[tuple] = None  # (keyword, delta_deg)
@@ -174,16 +179,17 @@ class WakeOrientController:
             logger.info("wake %r ignored: rotation in progress / cooldown",
                         keyword)
             return
-        # Convert DSP body-frame DOA (CW-positive viewed from above) into
-        # the IMU/vw delta convention (CCW-positive) by negating, then
-        # wrap to (-180, 180]. See module docstring for why this sign
-        # flip is needed even though both frames nominally look "body".
+        # Convert DSP body-frame DOA into the IMU/vw delta convention, then
+        # wrap to (-180, 180]. The historical car calibration uses -1 here
+        # (CW-positive DOA to CCW-positive yaw). Keep it configurable because
+        # mic/body sign conventions are easy to invert during hardware changes.
         body_doa = float(wake_doa_body_deg)
-        delta = -body_doa
+        delta = self._params.doa_to_yaw_sign * body_doa
         delta = ((delta + 180.0) % 360.0) - 180.0
         logger.info(
-            "wake %r: dsp_body_doa=%+0.1f°  -> imu_yaw_delta=%+0.1f°",
-            keyword, body_doa, delta,
+            "wake %r: dsp_body_doa=%+0.1f° sign=%+0.0f -> "
+            "imu_yaw_delta=%+0.1f°",
+            keyword, body_doa, self._params.doa_to_yaw_sign, delta,
         )
         if abs(delta) < self._params.min_doa_deg:
             logger.info("wake %r: doa %+0.1f° within deadzone, "
@@ -245,6 +251,24 @@ class WakeOrientController:
         # without wrap discontinuities tripping the deadzone check.
         start_yaw_unwrapped = self._serial.yaw_deg_unwrapped
         target_unwrapped = start_yaw_unwrapped + delta_deg
+        notified_yaw_unwrapped = start_yaw_unwrapped
+
+        def notify_yaw_delta(current_unwrapped: float, *,
+                             force: bool = False) -> None:
+            nonlocal notified_yaw_unwrapped
+            cb = self._on_yaw_delta
+            if cb is None:
+                return
+            inc = float(current_unwrapped - notified_yaw_unwrapped)
+            if not force and abs(inc) < 0.5:
+                return
+            if abs(inc) < 0.05:
+                return
+            try:
+                cb(inc)
+                notified_yaw_unwrapped = float(current_unwrapped)
+            except Exception:
+                logger.exception("on_yaw_delta raised")
 
         p = self._params
         dt_target = 1.0 / p.control_rate_hz
@@ -267,6 +291,7 @@ class WakeOrientController:
             current_unwrapped = self._serial.yaw_deg_unwrapped
             err_deg = target_unwrapped - current_unwrapped
             achieved_deg = current_unwrapped - start_yaw_unwrapped
+            notify_yaw_delta(current_unwrapped)
 
             if abs(err_deg) <= p.angle_deadzone_deg:
                 settled += 1
@@ -297,6 +322,9 @@ class WakeOrientController:
 
         # Stop wheels regardless of how we exited.
         self._send_velocity(0.0, 0.0)
+        final_unwrapped = self._serial.yaw_deg_unwrapped
+        achieved_deg = final_unwrapped - start_yaw_unwrapped
+        notify_yaw_delta(final_unwrapped, force=True)
 
         end_yaw = self._serial.yaw_deg
         logger.info(

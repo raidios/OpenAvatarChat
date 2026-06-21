@@ -38,6 +38,7 @@ class WsClientSessionDelegate(ClientSessionDelegate):
             EngineChannelType.AUDIO: asyncio.Queue(),
             EngineChannelType.TEXT: asyncio.Queue(),
         }
+        self.control_queue = asyncio.Queue()
         self.input_data_definitions: Dict[EngineChannelType, DataBundleDefinition] = {}
         self.modality_mapping = {
             EngineChannelType.AUDIO: ChatDataType.MIC_AUDIO,
@@ -102,6 +103,12 @@ class WsClientSessionDelegate(ClientSessionDelegate):
     async def _ws_send_loop(self, websocket: WebSocket):
         while not self.quit.is_set():
             try:
+                try:
+                    ctrl = await asyncio.wait_for(self.control_queue.get(), timeout=0.001)
+                    await websocket.send_text(json.dumps(ctrl))
+                except asyncio.TimeoutError:
+                    pass
+
                 chat_data: Optional[ChatData] = await self.get_data(EngineChannelType.AUDIO, timeout=0.05)
                 if chat_data is not None and chat_data.data is not None:
                     audio = chat_data.data.get_main_data()
@@ -349,6 +356,7 @@ class ClientHandlerWs(ClientHandlerBase):
             ChatDataType.AVATAR_AUDIO: HandlerDataInfo(type=ChatDataType.AVATAR_AUDIO),
             ChatDataType.AVATAR_TEXT: HandlerDataInfo(type=ChatDataType.AVATAR_TEXT),
             ChatDataType.HUMAN_TEXT: HandlerDataInfo(type=ChatDataType.HUMAN_TEXT),
+            ChatDataType.HUMAN_AUDIO: HandlerDataInfo(type=ChatDataType.HUMAN_AUDIO),
         }
         outputs = {
             ChatDataType.MIC_AUDIO: HandlerDataInfo(
@@ -370,6 +378,13 @@ class ClientHandlerWs(ClientHandlerBase):
                output_definitions: Dict[ChatDataType, HandlerDataInfo]):
         ctx = context
         if not hasattr(ctx, 'client_session_delegate') or ctx.client_session_delegate is None:
+            return
+        if inputs.type == ChatDataType.HUMAN_AUDIO:
+            if inputs.data is not None and inputs.data.get_meta("human_speech_start", False):
+                ctx.client_session_delegate.control_queue.put_nowait({
+                    "type": "human_speech_start",
+                    "speech_id": inputs.data.get_meta("speech_id", None),
+                })
             return
         channel = inputs.type.channel_type
         data_queue = ctx.client_session_delegate.output_queues.get(channel)

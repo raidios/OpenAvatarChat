@@ -23,6 +23,8 @@ Qwen TTS handler —— 流式按句合成 + 情绪标签锚点。
 import base64
 import os
 import re
+import threading
+import time
 from abc import ABC
 from typing import Dict, List, Optional, cast
 
@@ -42,6 +44,7 @@ from handlers.common.action_tags import AnchoredTag, extract_action_tags
 
 # 与 cosyvoice / edgetts 同款，避免不同 handler 朗读断句不一致。
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[,.~!?，。！？])")
+TELEMETRY_PREFIX = "[telemetry][tts]"
 
 
 def _split_stream_carry(text: str) -> tuple[str, str]:
@@ -69,6 +72,7 @@ class QwenTTSConfig(HandlerBaseConfigModel, BaseModel):
     voice: str = Field(default="Cherry")
     api_key: str = Field(default=os.getenv("DASHSCOPE_API_KEY", ""))
     sample_rate: int = Field(default=24000)
+    sentence_timeout_s: float = Field(default=3.0)
 
 
 class QwenTTSContext(HandlerContext):
@@ -87,6 +91,11 @@ class QwenTTSContext(HandlerContext):
         self.shared_states = None
         # 跨 chunk 的未闭合 ``[...`` 缓冲，见 ``_split_stream_carry``。
         self._tts_carry: str = ""
+        self._active_speech_id: Optional[str] = None
+        self._speech_started_at: Optional[float] = None
+        self._sentence_seq: int = 0
+        self._speech_audio_frames: int = 0
+        self._speech_audio_ms: float = 0.0
 
 
 class HandlerQwenTTS(HandlerBase, ABC):
@@ -156,6 +165,16 @@ class HandlerQwenTTS(HandlerBase, ABC):
         # 输出顺序按 offset 保留；offset 字段对客户端无意义，不传。
         return [{"name": t.name} for t in sorted(tags, key=lambda t: t.offset)]
 
+    def _ensure_speech_telemetry(self, context: QwenTTSContext, speech_id: str) -> None:
+        if context._active_speech_id == speech_id and context._speech_started_at is not None:
+            return
+        context._active_speech_id = speech_id
+        context._speech_started_at = time.monotonic()
+        context._sentence_seq = 0
+        context._speech_audio_frames = 0
+        context._speech_audio_ms = 0.0
+        logger.info(f"{TELEMETRY_PREFIX} speech_start speech_id={speech_id}")
+
     def _append_clean_from_raw(self, context: QwenTTSContext, raw_piece: str) -> None:
         """对一段已确定「不会在中间切断标签」的原文做 extract 并写入 clean_buffer。"""
         if not raw_piece:
@@ -199,6 +218,205 @@ class HandlerQwenTTS(HandlerBase, ABC):
         context.pending_tags = keep
         return out
 
+    @staticmethod
+    def _uses_tts_v2(model_name: str) -> bool:
+        return (model_name or "").lower().startswith("cosyvoice-")
+
+    def _synthesize_sentence_tts_v2(
+        self,
+        context: QwenTTSContext,
+        sentence: str,
+        prefix_tags: List[AnchoredTag],
+        output_definition: DataBundleDefinition,
+        speech_id: str,
+        sentence_started_at: float,
+        sentence_idx: int,
+    ) -> tuple[Optional[float], int, float]:
+        from dashscope.audio.tts_v2 import AudioFormat, ResultCallback, SpeechSynthesizer
+
+        first_audio_at: Optional[float] = None
+        first_frame = True
+        audio_frames = 0
+        audio_ms = 0.0
+        done_event = threading.Event()
+        error_holder: List[Optional[str]] = [None]
+
+        class CosyVoiceCallback(ResultCallback):
+            def on_data(self, data: bytes) -> None:
+                nonlocal first_audio_at, first_frame, audio_frames, audio_ms
+                if not data:
+                    return
+                now = time.monotonic()
+                if first_audio_at is None:
+                    first_audio_at = now
+                    logger.info(
+                        f"{TELEMETRY_PREFIX} sentence_first_audio speech_id={speech_id} "
+                        f"idx={sentence_idx} first_ms={(now - sentence_started_at) * 1000.0:.0f}"
+                    )
+                audio_int16 = np.frombuffer(data, dtype=np.int16)
+                if audio_int16.size == 0:
+                    return
+                audio_frames += 1
+                audio_ms += audio_int16.size / float(context.config.sample_rate) * 1000.0
+                audio_float = audio_int16.astype(np.float32) / 32767.0
+
+                output = DataBundle(output_definition)
+                output.set_main_data(audio_float[np.newaxis, ...])
+                output.add_meta("avatar_speech_end", False)
+                output.add_meta("speech_id", speech_id)
+                if first_frame and prefix_tags:
+                    output.add_meta("action_tags", self._make_tag_meta(prefix_tags))
+                context.submit_data(output)
+                context.any_audio_emitted = True
+                first_frame = False
+
+            def on_complete(self) -> None:
+                done_event.set()
+
+            def on_error(self, message) -> None:
+                error_holder[0] = str(message)
+                done_event.set()
+
+            def on_close(self) -> None:
+                done_event.set()
+
+        callback = CosyVoiceCallback()
+        synthesizer = SpeechSynthesizer(
+            model=context.config.model_name,
+            voice=context.config.voice,
+            callback=callback,
+            format=AudioFormat.PCM_24000HZ_MONO_16BIT,
+        )
+        synthesizer.streaming_call(sentence)
+        synthesizer.streaming_complete()
+        completed = done_event.wait(timeout=30)
+        if not completed:
+            logger.error(
+                f"QwenTTS tts_v2 timeout: model={context.config.model_name} "
+                f"voice={context.config.voice} sentence={sentence!r}"
+            )
+        if error_holder[0]:
+            logger.error(f"QwenTTS tts_v2 error: {error_holder[0]}")
+        return first_audio_at, audio_frames, audio_ms
+
+    def _synthesize_sentence_multimodal(
+        self,
+        context: QwenTTSContext,
+        sentence: str,
+        prefix_tags: List[AnchoredTag],
+        output_definition: DataBundleDefinition,
+        speech_id: str,
+        sentence_started_at: float,
+        sentence_idx: int,
+    ) -> tuple[Optional[float], int, float]:
+        first_audio_at: Optional[float] = None
+        first_frame = True
+        audio_frames = 0
+        audio_ms = 0.0
+        done_event = threading.Event()
+        cancelled = threading.Event()
+        error_holder: List[Optional[BaseException]] = [None]
+        progress_lock = threading.Lock()
+        last_progress_at = [sentence_started_at]
+
+        def worker() -> None:
+            nonlocal first_audio_at, first_frame, audio_frames, audio_ms
+            try:
+                from dashscope import MultiModalConversation
+
+                responses = MultiModalConversation.call(
+                    model=context.config.model_name,
+                    text=sentence,
+                    voice=context.config.voice,
+                    stream=True,
+                )
+
+                for chunk in responses:
+                    if cancelled.is_set():
+                        break
+                    if chunk.output is None:
+                        logger.error(f"QwenTTS error chunk: {chunk}")
+                        break
+
+                    audio_output = (
+                        chunk.output.get("audio") if isinstance(chunk.output, dict)
+                        else getattr(chunk.output, "audio", None)
+                    )
+                    if audio_output is not None:
+                        audio_b64 = (
+                            audio_output.get("data") if isinstance(audio_output, dict)
+                            else getattr(audio_output, "data", None)
+                        )
+                        if audio_b64:
+                            audio_bytes = base64.b64decode(audio_b64)
+                            now = time.monotonic()
+                            if first_audio_at is None:
+                                first_audio_at = now
+                                logger.info(
+                                    f"{TELEMETRY_PREFIX} sentence_first_audio speech_id={speech_id} "
+                                    f"idx={sentence_idx} first_ms={(now - sentence_started_at) * 1000.0:.0f}"
+                                )
+                            with progress_lock:
+                                last_progress_at[0] = now
+                            audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
+                            audio_frames += 1
+                            audio_ms += audio_int16.size / float(context.config.sample_rate) * 1000.0
+                            audio_float = audio_int16.astype(np.float32) / 32767.0
+                            audio_float = audio_float[np.newaxis, ...]
+
+                            if cancelled.is_set():
+                                break
+                            output = DataBundle(output_definition)
+                            output.set_main_data(audio_float)
+                            output.add_meta("avatar_speech_end", False)
+                            output.add_meta("speech_id", speech_id)
+                            if first_frame and prefix_tags:
+                                output.add_meta(
+                                    "action_tags",
+                                    self._make_tag_meta(prefix_tags),
+                                )
+                            context.submit_data(output)
+                            context.any_audio_emitted = True
+                            first_frame = False
+
+                    finish_reason = (
+                        chunk.output.get("finish_reason") if isinstance(chunk.output, dict)
+                        else getattr(chunk.output, "finish_reason", None)
+                    )
+                    if finish_reason == "stop":
+                        break
+            except BaseException as e:
+                error_holder[0] = e
+            finally:
+                done_event.set()
+
+        thread = threading.Thread(
+            target=worker,
+            name=f"qwen-tts-{speech_id}-{sentence_idx}",
+            daemon=True,
+        )
+        thread.start()
+
+        timeout_s = max(float(context.config.sentence_timeout_s), 0.1)
+        while not done_event.is_set():
+            with progress_lock:
+                idle_for = time.monotonic() - last_progress_at[0]
+            remaining = timeout_s - idle_for
+            if remaining <= 0:
+                cancelled.set()
+                logger.error(
+                    f"QwenTTS multimodal idle timeout after {timeout_s:.1f}s: "
+                    f"model={context.config.model_name} voice={context.config.voice} "
+                    f"sentence={sentence!r}"
+                )
+                break
+            done_event.wait(timeout=min(remaining, 0.1))
+
+        if done_event.is_set() and error_holder[0] is not None:
+            raise error_holder[0]
+
+        return first_audio_at, audio_frames, audio_ms
+
     def _synthesize_sentence(
         self,
         context: QwenTTSContext,
@@ -214,57 +432,40 @@ class HandlerQwenTTS(HandlerBase, ABC):
         必须等于**断句切出的原始片段长度**（含首尾空白），以便与
         ``_pop_tags_for_sentence`` 里用的锚点区间一致。
         """
-        from dashscope import MultiModalConversation
-
-        first_frame = True
+        context._sentence_seq += 1
+        sentence_idx = context._sentence_seq
+        sentence_started_at = time.monotonic()
+        first_audio_at: Optional[float] = None
+        audio_frames = 0
+        audio_ms = 0.0
+        tag_names = [t.name for t in prefix_tags]
         logger.info(f"QwenTTS synth sentence: {sentence!r} tags={[t.name for t in prefix_tags]}")
+        logger.info(
+            f"{TELEMETRY_PREFIX} sentence_start speech_id={speech_id} "
+            f"idx={sentence_idx} model={context.config.model_name} voice={context.config.voice} "
+            f"chars={len(sentence)} tags={tag_names}"
+        )
         try:
-            responses = MultiModalConversation.call(
-                model=context.config.model_name,
-                text=sentence,
-                voice=context.config.voice,
-                stream=True,
-            )
-
-            for chunk in responses:
-                if chunk.output is None:
-                    logger.error(f"QwenTTS error chunk: {chunk}")
-                    break
-
-                audio_output = (
-                    chunk.output.get("audio") if isinstance(chunk.output, dict)
-                    else getattr(chunk.output, "audio", None)
+            if self._uses_tts_v2(context.config.model_name):
+                first_audio_at, audio_frames, audio_ms = self._synthesize_sentence_tts_v2(
+                    context=context,
+                    sentence=sentence,
+                    prefix_tags=prefix_tags,
+                    output_definition=output_definition,
+                    speech_id=speech_id,
+                    sentence_started_at=sentence_started_at,
+                    sentence_idx=sentence_idx,
                 )
-                if audio_output is not None:
-                    audio_b64 = (
-                        audio_output.get("data") if isinstance(audio_output, dict)
-                        else getattr(audio_output, "data", None)
-                    )
-                    if audio_b64:
-                        audio_bytes = base64.b64decode(audio_b64)
-                        audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
-                        audio_float = audio_int16.astype(np.float32) / 32767.0
-                        audio_float = audio_float[np.newaxis, ...]
-
-                        output = DataBundle(output_definition)
-                        output.set_main_data(audio_float)
-                        output.add_meta("avatar_speech_end", False)
-                        output.add_meta("speech_id", speech_id)
-                        if first_frame and prefix_tags:
-                            output.add_meta(
-                                "action_tags",
-                                self._make_tag_meta(prefix_tags),
-                            )
-                        context.submit_data(output)
-                        context.any_audio_emitted = True
-                        first_frame = False
-
-                finish_reason = (
-                    chunk.output.get("finish_reason") if isinstance(chunk.output, dict)
-                    else getattr(chunk.output, "finish_reason", None)
+            else:
+                first_audio_at, audio_frames, audio_ms = self._synthesize_sentence_multimodal(
+                    context=context,
+                    sentence=sentence,
+                    prefix_tags=prefix_tags,
+                    output_definition=output_definition,
+                    speech_id=speech_id,
+                    sentence_started_at=sentence_started_at,
+                    sentence_idx=sentence_idx,
                 )
-                if finish_reason == "stop":
-                    break
 
         except Exception as e:
             logger.opt(exception=True).error(f"QwenTTS synthesis error: {e}")
@@ -272,6 +473,18 @@ class HandlerQwenTTS(HandlerBase, ABC):
                 context.shared_states.enable_vad = True
         finally:
             context.chars_consumed += chars_advance
+            context._speech_audio_frames += audio_frames
+            context._speech_audio_ms += audio_ms
+            elapsed_ms = (time.monotonic() - sentence_started_at) * 1000.0
+            first_ms = (
+                (first_audio_at - sentence_started_at) * 1000.0
+                if first_audio_at is not None else -1.0
+            )
+            logger.info(
+                f"{TELEMETRY_PREFIX} sentence_done speech_id={speech_id} idx={sentence_idx} "
+                f"elapsed_ms={elapsed_ms:.0f} first_ms={first_ms:.0f} "
+                f"audio_ms={audio_ms:.0f} frames={audio_frames}"
+            )
 
     def _flush_complete_sentences(
         self,
@@ -313,12 +526,28 @@ class HandlerQwenTTS(HandlerBase, ABC):
             )
         tail_names = [t.name for t in context.pending_tags]
         context.submit_data(end_output)
+        speech_started = context._speech_started_at
+        wall_ms = (
+            (time.monotonic() - speech_started) * 1000.0
+            if speech_started is not None else -1.0
+        )
+        logger.info(
+            f"{TELEMETRY_PREFIX} speech_end speech_id={speech_id} "
+            f"wall_ms={wall_ms:.0f} audio_ms={context._speech_audio_ms:.0f} "
+            f"frames={context._speech_audio_frames} sentences={context._sentence_seq} "
+            f"tail_tags={tail_names}"
+        )
         logger.info(f"QwenTTS speech end (tail_tags={tail_names})")
         context.pending_tags = []
         context.clean_buffer = ""
         context.chars_consumed = 0
         context.any_audio_emitted = False
         context._tts_carry = ""
+        context._active_speech_id = None
+        context._speech_started_at = None
+        context._sentence_seq = 0
+        context._speech_audio_frames = 0
+        context._speech_audio_ms = 0.0
 
     # ------------------------------------------------------------------
     # main entry
@@ -336,6 +565,7 @@ class HandlerQwenTTS(HandlerBase, ABC):
         speech_id = inputs.data.get_meta("speech_id")
         if speech_id is None:
             speech_id = context.session_id
+        self._ensure_speech_telemetry(context, speech_id)
 
         if text:
             self._ingest_chunk(context, text)

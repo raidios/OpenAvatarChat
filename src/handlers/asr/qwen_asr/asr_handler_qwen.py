@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 from abc import ABC
 from typing import Dict, List, Optional, cast
 
@@ -15,6 +16,8 @@ from chat_engine.data_models.chat_data_type import ChatDataType
 from chat_engine.data_models.chat_engine_config_data import ChatEngineConfigModel, HandlerBaseConfigModel
 from chat_engine.data_models.runtime_data.data_bundle import DataBundle, DataBundleDefinition, DataBundleEntry
 
+TELEMETRY_PREFIX = "[telemetry][asr]"
+
 
 class QwenASRConfig(HandlerBaseConfigModel, BaseModel):
     model_name: str = Field(default="qwen3-asr-flash")
@@ -29,6 +32,7 @@ class QwenASRContext(HandlerContext):
         self.config: Optional[QwenASRConfig] = None
         self.output_audios: List[np.ndarray] = []
         self.shared_states = None
+        self._asr_seq = 0
 
 
 class HandlerQwenASR(HandlerBase, ABC):
@@ -110,6 +114,9 @@ class HandlerQwenASR(HandlerBase, ABC):
         speech_end = inputs.data.get_meta("human_speech_end", False)
         if not speech_end:
             return
+        context._asr_seq += 1
+        asr_id = f"asr{context._asr_seq:06d}"
+        handle_started_at = time.monotonic()
 
         if not context.output_audios:
             if context.shared_states is not None and context.shared_states.wake_session_active:
@@ -125,22 +132,45 @@ class HandlerQwenASR(HandlerBase, ABC):
         else:
             pcm_int16 = full_audio.astype(np.int16)
         pcm_bytes = pcm_int16.tobytes()
+        audio_ms = len(pcm_int16) / float(context.config.sample_rate) * 1000.0
+        logger.info(
+            f"{TELEMETRY_PREFIX} start id={asr_id} speech_id={speech_id} "
+            f"model={context.config.model_name} audio_ms={audio_ms:.0f} "
+            f"bytes={len(pcm_bytes)} sample_rate={context.config.sample_rate}"
+        )
 
         results: List[str] = []
         done_event = threading.Event()
         error_holder: List[Optional[str]] = [None]
+        stats = {
+            "events": 0,
+            "final_events": 0,
+            "first_event_at": None,
+            "first_final_at": None,
+            "complete_at": None,
+            "error_at": None,
+        }
 
         class ASRCallback(RecognitionCallback):
             def on_event(self, result: RecognitionResult):
+                now = time.monotonic()
+                stats["events"] += 1
+                if stats["first_event_at"] is None:
+                    stats["first_event_at"] = now
                 sentence = result.get_sentence()
                 if sentence and sentence.get("text"):
                     if sentence.get("end_time") is not None or sentence.get("is_sentence_end"):
+                        stats["final_events"] += 1
+                        if stats["first_final_at"] is None:
+                            stats["first_final_at"] = now
                         results.append(sentence["text"])
 
             def on_complete(self):
+                stats["complete_at"] = time.monotonic()
                 done_event.set()
 
             def on_error(self, result: RecognitionResult):
+                stats["error_at"] = time.monotonic()
                 error_holder[0] = str(result)
                 done_event.set()
 
@@ -156,22 +186,48 @@ class HandlerQwenASR(HandlerBase, ABC):
         )
 
         try:
+            start_call_at = time.monotonic()
             recognition.start()
+            start_done_at = time.monotonic()
 
             chunk_size = sample_rate * 2  # 1 second of int16 audio
             offset = 0
+            chunks = 0
+            send_started_at = time.monotonic()
             while offset < len(pcm_bytes):
                 end = min(offset + chunk_size, len(pcm_bytes))
                 recognition.send_audio_frame(pcm_bytes[offset:end])
                 offset = end
+                chunks += 1
+            send_done_at = time.monotonic()
 
+            stop_call_at = time.monotonic()
             recognition.stop()
-            done_event.wait(timeout=30)
+            stop_done_at = time.monotonic()
+            wait_started_at = time.monotonic()
+            completed = done_event.wait(timeout=30)
+            wait_done_at = time.monotonic()
         except Exception as e:
             logger.opt(exception=True).error(f"QwenASR recognition error: {e}")
             if context.shared_states is not None and context.shared_states.wake_session_active:
                 context.shared_states.enable_vad = True
             return
+
+        def _ms_since(ts: Optional[float]) -> float:
+            return (ts - handle_started_at) * 1000.0 if ts is not None else -1.0
+
+        logger.info(
+            f"{TELEMETRY_PREFIX} done id={asr_id} completed={completed} "
+            f"total_ms={(wait_done_at - handle_started_at) * 1000.0:.0f} "
+            f"start_ms={(start_done_at - start_call_at) * 1000.0:.0f} "
+            f"send_ms={(send_done_at - send_started_at) * 1000.0:.0f} "
+            f"stop_ms={(stop_done_at - stop_call_at) * 1000.0:.0f} "
+            f"wait_ms={(wait_done_at - wait_started_at) * 1000.0:.0f} "
+            f"chunks={chunks} events={stats['events']} finals={stats['final_events']} "
+            f"first_event_ms={_ms_since(cast(Optional[float], stats['first_event_at'])):.0f} "
+            f"first_final_ms={_ms_since(cast(Optional[float], stats['first_final_at'])):.0f} "
+            f"complete_ms={_ms_since(cast(Optional[float], stats['complete_at'])):.0f}"
+        )
 
         if error_holder[0]:
             logger.error(f"QwenASR callback error: {error_holder[0]}")

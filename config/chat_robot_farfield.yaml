@@ -62,7 +62,7 @@ default:
         sample_rate: 24000
       LLMOpenAICompatible:
         module: llm/openai_compatible/llm_handler_openai_compatible
-        model_name: "qwen3.5-flash"
+        model_name: "qwen3.6-flash"
         enable_video_input: true
         history_length: 20
         system_prompt: "config/system_prompt.txt"
